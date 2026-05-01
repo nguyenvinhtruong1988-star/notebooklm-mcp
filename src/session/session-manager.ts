@@ -12,7 +12,7 @@
  * Based on the Python implementation from session_manager.py
  */
 
-import { AuthManager } from "../auth/auth-manager.js";
+import type { AuthManager } from "../auth/auth-manager.js";
 import { BrowserSession } from "./browser-session.js";
 import { SharedContextManager } from "./shared-context-manager.js";
 import { CONFIG } from "../config.js";
@@ -40,10 +40,7 @@ export class SessionManager {
       `  Timeout: ${this.sessionTimeout}s (${Math.floor(this.sessionTimeout / 60)} minutes)`
     );
 
-    const cleanupIntervalSeconds = Math.max(
-      60,
-      Math.min(Math.floor(this.sessionTimeout / 2), 300)
-    );
+    const cleanupIntervalSeconds = Math.max(60, Math.min(Math.floor(this.sessionTimeout / 2), 300));
     this.cleanupInterval = setInterval(() => {
       this.cleanupInactiveSessions().catch((error) => {
         log.warning(`⚠️  Error during automatic session cleanup: ${error}`);
@@ -89,9 +86,13 @@ export class SessionManager {
     // Check if browser visibility mode needs to change
     if (overrideHeadless !== undefined) {
       if (this.sharedContextManager.needsHeadlessModeChange(overrideHeadless)) {
-        log.warning(`🔄 Browser visibility changed - closing all sessions to recreate browser context...`);
+        log.warning(
+          `🔄 Browser visibility changed - closing all sessions to recreate browser context...`
+        );
         const currentMode = this.sharedContextManager.getCurrentHeadlessMode();
-        log.info(`  Switching from ${currentMode ? 'HEADLESS' : 'VISIBLE'} to ${overrideHeadless ? 'VISIBLE' : 'HEADLESS'}`);
+        log.info(
+          `  Switching from ${currentMode ? "HEADLESS" : "VISIBLE"} to ${overrideHeadless ? "VISIBLE" : "HEADLESS"}`
+        );
 
         // Close all sessions (they all use the same context)
         await this.closeAllSessions();
@@ -335,14 +336,8 @@ export class SessionManager {
   } {
     const sessionsInfo = this.getAllSessionsInfo();
 
-    const totalMessages = sessionsInfo.reduce(
-      (sum, info) => sum + info.message_count,
-      0
-    );
-    const oldestSessionSeconds = Math.max(
-      ...sessionsInfo.map((info) => info.age_seconds),
-      0
-    );
+    const totalMessages = sessionsInfo.reduce((sum, info) => sum + info.message_count, 0);
+    const oldestSessionSeconds = Math.max(...sessionsInfo.map((info) => info.age_seconds), 0);
 
     return {
       active_sessions: sessionsInfo.length,

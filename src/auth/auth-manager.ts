@@ -12,12 +12,17 @@
  * Based on the Python implementation from auth.py
  */
 
-import type { BrowserContext, Page } from "patchright";
+import type { BrowserContext, ElementHandle, Page } from "patchright";
 import fs from "fs/promises";
 import { existsSync } from "fs";
 import path from "path";
 import { CONFIG, NOTEBOOKLM_AUTH_URL } from "../config.js";
 import { log } from "../utils/logger.js";
+import {
+  getPreferredChannel,
+  isChannelFailure,
+  withChannel,
+} from "../browser/chromium-fallback.js";
 import {
   humanType,
   randomDelay,
@@ -68,13 +73,10 @@ export class AuthManager {
           const sessionStorageData: string = await page.evaluate((): string => {
             // Properly extract sessionStorage as a plain object
             const storage: Record<string, string> = {};
-            // @ts-expect-error - sessionStorage exists in browser context
             for (let i = 0; i < sessionStorage.length; i++) {
-              // @ts-expect-error - sessionStorage exists in browser context
               const key = sessionStorage.key(i);
               if (key) {
-                // @ts-expect-error - sessionStorage exists in browser context
-                storage[key] = sessionStorage.getItem(key) || '';
+                storage[key] = sessionStorage.getItem(key) || "";
               }
             }
             return JSON.stringify(storage);
@@ -172,9 +174,7 @@ export class AuthManager {
       }
 
       // Check for Google auth cookies
-      const googleCookies = cookies.filter((c) =>
-        c.domain.includes("google.com")
-      );
+      const googleCookies = cookies.filter((c) => c.domain.includes("google.com"));
       if (googleCookies.length === 0) {
         log.warning("⚠️  No Google cookies found");
         return false;
@@ -211,9 +211,7 @@ export class AuthManager {
       }
 
       // Find critical cookies
-      const criticalCookies = cookies.filter((c) =>
-        CRITICAL_COOKIE_NAMES.includes(c.name)
-      );
+      const criticalCookies = cookies.filter((c) => CRITICAL_COOKIE_NAMES.includes(c.name));
 
       if (criticalCookies.length === 0) {
         log.warning("⚠️  No critical auth cookies found");
@@ -392,7 +390,7 @@ export class AuthManager {
         timeout: CONFIG.browserTimeout,
       });
       log.success(`  ✅ Page loaded: ${page.url().slice(0, 80)}...`);
-    } catch (error) {
+    } catch {
       log.warning(`  ⚠️  Page load timeout (continuing anyway)`);
     }
 
@@ -469,10 +467,7 @@ export class AuthManager {
 
     // Take screenshot for debugging
     try {
-      const screenshotPath = path.join(
-        CONFIG.dataDir,
-        `login_failed_${Date.now()}.png`
-      );
+      const screenshotPath = path.join(CONFIG.dataDir, `login_failed_${Date.now()}.png`);
       await page.screenshot({ path: screenshotPath });
       log.info(`  📸 Screenshot saved: ${screenshotPath}`);
     } catch (error) {
@@ -488,9 +483,7 @@ export class AuthManager {
         log.error("  ❌ Still on email page - email input might have failed");
         log.info("  💡 Check if email is correct in .env");
       } else if (currentUrl.includes("/challenge")) {
-        log.error(
-          "  ❌ Google requires additional verification (2FA, CAPTCHA, suspicious login)"
-        );
+        log.error("  ❌ Google requires additional verification (2FA, CAPTCHA, suspicious login)");
         log.info("  💡 Try logging in manually first: use setup_auth tool");
       } else if (currentUrl.includes("/pwd") || currentUrl.includes("/password")) {
         log.error("  ❌ Still on password page - password input might have failed");
@@ -518,10 +511,7 @@ export class AuthManager {
    * Just checks if URL changes to notebooklm.google.com - no complex UI element searching!
    * Matches the simplified approach used in performLogin().
    */
-  private async waitForRedirectAfterLogin(
-    page: Page,
-    deadline: number
-  ): Promise<boolean> {
+  private async waitForRedirectAfterLogin(page: Page, deadline: number): Promise<boolean> {
     log.info("    ⏳ Waiting for redirect to NotebookLM...");
 
     while (Date.now() < deadline) {
@@ -621,7 +611,7 @@ export class AuthManager {
     ];
 
     let emailSelector: string | null = null;
-    let emailField: any = null;
+    let emailField: ElementHandle<Element> | null = null;
 
     for (const selector of emailSelectors) {
       try {
@@ -683,7 +673,9 @@ export class AuthManager {
     // ✅ FASTER: Programmer typing speed (90-120 WPM from config)
     log.info(`    ⌨️  Typing email: ${this.maskEmail(email)}`);
     try {
-      const wpm = CONFIG.typingWpmMin + Math.floor(Math.random() * (CONFIG.typingWpmMax - CONFIG.typingWpmMin + 1));
+      const wpm =
+        CONFIG.typingWpmMin +
+        Math.floor(Math.random() * (CONFIG.typingWpmMax - CONFIG.typingWpmMin + 1));
       await humanType(page, emailSelector, email, { wpm, withTypos: false });
       log.success("    ✅ Email typed successfully");
     } catch (error) {
@@ -743,7 +735,7 @@ export class AuthManager {
     const passwordSelectors = ["input[name='Passwd']", "input[type='password']"];
 
     let passwordSelector: string | null = null;
-    let passwordField: any = null;
+    let passwordField: ElementHandle<Element> | null = null;
 
     for (const selector of passwordSelectors) {
       try {
@@ -784,7 +776,9 @@ export class AuthManager {
     // ✅ FASTER: Programmer typing speed (90-120 WPM from config)
     log.info("    ⌨️  Typing password...");
     try {
-      const wpm = CONFIG.typingWpmMin + Math.floor(Math.random() * (CONFIG.typingWpmMax - CONFIG.typingWpmMin + 1));
+      const wpm =
+        CONFIG.typingWpmMin +
+        Math.floor(Math.random() * (CONFIG.typingWpmMax - CONFIG.typingWpmMin + 1));
       if (passwordSelector) {
         await humanType(page, passwordSelector, password, { wpm, withTypos: false });
       }
@@ -911,7 +905,10 @@ export class AuthManager {
    * @param overrideHeadless Optional override for headless mode (true = visible, false = headless)
    *                         If not provided, defaults to true (visible) for setup
    */
-  async performSetup(sendProgress?: ProgressCallback, overrideHeadless?: boolean): Promise<boolean> {
+  async performSetup(
+    sendProgress?: ProgressCallback,
+    overrideHeadless?: boolean
+  ): Promise<boolean> {
     const { chromium } = await import("patchright");
 
     // Determine headless mode: override or default to true (visible for setup)
@@ -929,23 +926,38 @@ export class AuthManager {
       await sendProgress?.("Launching persistent browser...", 2, 10);
 
       // ✅ CRITICAL FIX: Use launchPersistentContext (same as runtime!)
-      // This ensures session cookies persist correctly
-      const context = await chromium.launchPersistentContext(
-        CONFIG.chromeProfileDir,
-        {
-          headless: !shouldShowBrowser, // Use override or default to visible for setup
-          channel: "chrome" as const,
-          viewport: CONFIG.viewport,
-          locale: "en-US",
-          timezoneId: "Europe/Berlin",
-          args: [
-            "--disable-blink-features=AutomationControlled",
-            "--disable-dev-shm-usage",
-            "--no-first-run",
-            "--no-default-browser-check",
-          ],
+      // This ensures session cookies persist correctly. Channel selection +
+      // fallback shared with the runtime context manager (issues #13, #19).
+      const baseLaunchOptions = {
+        headless: !shouldShowBrowser,
+        viewport: CONFIG.viewport,
+        locale: "en-US",
+        timezoneId: "Europe/Berlin",
+        args: [
+          "--disable-blink-features=AutomationControlled",
+          "--disable-dev-shm-usage",
+          "--no-first-run",
+          "--no-default-browser-check",
+        ],
+      };
+      const preferred = getPreferredChannel();
+      let context: BrowserContext;
+      try {
+        context = await chromium.launchPersistentContext(
+          CONFIG.chromeProfileDir,
+          withChannel(baseLaunchOptions, preferred)
+        );
+      } catch (err) {
+        if (preferred === "chrome" && isChannelFailure(err)) {
+          log.warning("⚠️  System Chrome failed to launch — falling back to bundled Chromium.");
+          context = await chromium.launchPersistentContext(
+            CONFIG.chromeProfileDir,
+            withChannel(baseLaunchOptions, "chromium")
+          );
+        } else {
+          throw err;
         }
-      );
+      }
 
       // Get or create a page
       const pages = context.pages();

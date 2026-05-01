@@ -1,23 +1,23 @@
 /**
  * Settings Manager
- * 
+ *
  * Handles persistent configuration for the NotebookLM MCP Server.
  * Manages profiles, disabled tools, and environment variable overrides.
  */
 
 import fs from "fs/promises";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import path from "path";
 import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 export type ProfileName = "minimal" | "standard" | "full";
 
 export interface Settings {
   profile: ProfileName;
   disabledTools: string[];
-  customSettings?: Record<string, any>;
+  customSettings?: Record<string, unknown>;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -25,13 +25,17 @@ const DEFAULT_SETTINGS: Settings = {
   disabledTools: [],
 };
 
+function isProfileName(value: string | undefined): value is ProfileName {
+  return value === "minimal" || value === "standard" || value === "full";
+}
+
 const PROFILES: Record<ProfileName, string[]> = {
   minimal: [
     "ask_question",
     "get_health",
     "list_notebooks",
     "select_notebook",
-    "get_notebook" // Added as it is read-only and useful
+    "get_notebook", // Added as it is read-only and useful
   ],
   standard: [
     "ask_question",
@@ -43,9 +47,9 @@ const PROFILES: Record<ProfileName, string[]> = {
     "list_sessions",
     "add_notebook",
     "update_notebook",
-    "search_notebooks"
+    "search_notebooks",
   ],
-  full: ["*"] // All tools
+  full: ["*"], // All tools
 };
 
 export class SettingsManager {
@@ -69,12 +73,9 @@ export class SettingsManager {
       }
 
       if (existsSync(this.settingsPath)) {
-        // Use fs.readFileSync for synchronous initialization in constructor if needed, 
-        // but here we used async fs in imports. For simplicity in constructor, 
-        // we'll assume the file is read when needed or require explicit init. 
-        // Actually, to keep it simple, let's use require/import or readFileSync.
-        const fsSync =  require("fs");
-        const data = fsSync.readFileSync(this.settingsPath, "utf-8");
+        // Synchronous read keeps the constructor simple — settings are tiny
+        // and we need them before any tool dispatch can happen.
+        const data = readFileSync(this.settingsPath, "utf-8");
         return { ...DEFAULT_SETTINGS, ...JSON.parse(data) };
       }
     } catch (error) {
@@ -91,7 +92,7 @@ export class SettingsManager {
     try {
       await fs.writeFile(this.settingsPath, JSON.stringify(this.settings, null, 2), "utf-8");
     } catch (error) {
-      throw new Error(`Failed to save settings: ${error}`);
+      throw new Error(`Failed to save settings: ${error}`, { cause: error });
     }
   }
 
@@ -99,21 +100,22 @@ export class SettingsManager {
    * Get effective configuration (merging File settings with Env Vars)
    */
   getEffectiveSettings(): Settings {
-    const envProfile = process.env.NOTEBOOKLM_PROFILE as ProfileName;
+    const envProfileRaw = process.env.NOTEBOOKLM_PROFILE;
+    const envProfile = isProfileName(envProfileRaw) ? envProfileRaw : undefined;
     const envDisabled = process.env.NOTEBOOKLM_DISABLED_TOOLS;
 
-    const effectiveProfile = (envProfile && PROFILES[envProfile]) ? envProfile : this.settings.profile;
-    
+    const effectiveProfile = envProfile ?? this.settings.profile;
+
     let effectiveDisabled = [...this.settings.disabledTools];
     if (envDisabled) {
-      const envDisabledList = envDisabled.split(",").map(t => t.trim());
+      const envDisabledList = envDisabled.split(",").map((t) => t.trim());
       effectiveDisabled = [...new Set([...effectiveDisabled, ...envDisabledList])];
     }
 
     return {
       profile: effectiveProfile,
       disabledTools: effectiveDisabled,
-      customSettings: this.settings.customSettings
+      customSettings: this.settings.customSettings,
     };
   }
 
@@ -124,7 +126,7 @@ export class SettingsManager {
     const { profile, disabledTools } = this.getEffectiveSettings();
     const allowedTools = PROFILES[profile];
 
-    return allTools.filter(tool => {
+    return allTools.filter((tool) => {
       // 1. Check if allowed by profile (unless profile is full/wildcard)
       if (!allowedTools.includes("*") && !allowedTools.includes(tool.name)) {
         return false;

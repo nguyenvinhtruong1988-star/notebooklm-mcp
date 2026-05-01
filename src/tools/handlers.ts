@@ -4,22 +4,39 @@
  * Implements the logic for all MCP tools.
  */
 
-import { SessionManager } from "../session/session-manager.js";
-import { AuthManager } from "../auth/auth-manager.js";
-import { NotebookLibrary } from "../library/notebook-library.js";
-import type { AddNotebookInput, UpdateNotebookInput } from "../library/types.js";
+import type { SessionManager } from "../session/session-manager.js";
+import type { AuthManager } from "../auth/auth-manager.js";
+import type { NotebookLibrary } from "../library/notebook-library.js";
+import type {
+  AddNotebookInput,
+  LibraryStats,
+  NotebookEntry,
+  UpdateNotebookInput,
+} from "../library/types.js";
+import type { AddSourceResult } from "../notebooklm/sources.js";
+import type { AudioGenerationResult, DownloadAudioResult } from "../notebooklm/audio.js";
 import { CONFIG, applyBrowserOptions, type BrowserOptions } from "../config.js";
 import { log } from "../utils/logger.js";
-import type {
-  AskQuestionResult,
-  ToolResult,
-  ProgressCallback,
-} from "../types.js";
+import type { AskQuestionResult, ToolResult, ProgressCallback } from "../types.js";
 import { RateLimitError } from "../errors.js";
 import { CleanupManager } from "../utils/cleanup-manager.js";
+import { applyAiMarker, PROVENANCE } from "../utils/disclaimer.js";
 
+/**
+ * Follow-up reminder appended to ask_question answers when explicitly enabled.
+ * Off by default in v2 (issue #28) — the imperative phrasing reads like
+ * adversarial prompt injection to safety-trained host agents and creates
+ * noisy false positives. Opt back in via `NOTEBOOKLM_FOLLOW_UP_REMINDER=true`.
+ */
 const FOLLOW_UP_REMINDER =
-  "\n\nEXTREMELY IMPORTANT: Is that ALL you need to know? You can always ask another question using the same session ID! Think about it carefully: before you reply to the user, review their original request and this answer. If anything is still unclear or missing, ask me another question first.";
+  "\n\nIs that all you need to know? You can always ask another question using the same session ID. Before you reply to the user, review their original request and this answer; if anything is still unclear or missing, ask another question first.";
+
+function followUpReminderEnabled(): boolean {
+  const raw = process.env.NOTEBOOKLM_FOLLOW_UP_REMINDER;
+  if (raw === undefined) return false;
+  const lower = raw.trim().toLowerCase();
+  return lower === "true" || lower === "1" || lower === "yes";
+}
 
 /**
  * MCP Tool Handlers
@@ -46,10 +63,19 @@ export class ToolHandlers {
       notebook_url?: string;
       show_browser?: boolean;
       browser_options?: BrowserOptions;
+      source_format?: "none" | "inline" | "footnotes" | "json";
     },
     sendProgress?: ProgressCallback
   ): Promise<ToolResult<AskQuestionResult>> {
-    const { question, session_id, notebook_id, notebook_url, show_browser, browser_options } = args;
+    const {
+      question,
+      session_id,
+      notebook_id,
+      notebook_url,
+      show_browser,
+      browser_options,
+      source_format = "none",
+    } = args;
 
     log.info(`🔧 [TOOL] ask_question called`);
     log.info(`  Question: "${question.substring(0, 100)}"...`);
@@ -114,28 +140,41 @@ export class ToolHandlers {
           overrideHeadless
         );
 
-      // Progress: Asking question
-      await sendProgress?.("Asking question to NotebookLM...", 2, 5);
+        // Progress: Asking question
+        await sendProgress?.("Asking question to NotebookLM...", 2, 5);
 
-      // Ask the question (pass progress callback)
-      const rawAnswer = await session.ask(question, sendProgress);
-      const answer = `${rawAnswer.trimEnd()}${FOLLOW_UP_REMINDER}`;
+        // Ask the question (pass progress callback)
+        const rawAnswer = await session.ask(question, sendProgress);
 
-      // Get session info
-      const sessionInfo = session.getInfo();
+        // Extract citations from the same page session before any other call
+        // disturbs the source panel (issue #20).
+        const citationResult = await session.extractCitations(rawAnswer, source_format);
+        const baseAnswer = citationResult.formattedAnswer;
 
-      const result: AskQuestionResult = {
-        status: "success",
-        question,
-        answer,
-        session_id: session.sessionId,
-        notebook_url: session.notebookUrl,
-        session_info: {
-          age_seconds: sessionInfo.age_seconds,
-          message_count: sessionInfo.message_count,
-          last_activity: sessionInfo.last_activity,
-        },
-      };
+        const trimmed = baseAnswer.trimEnd();
+        const withReminder = followUpReminderEnabled()
+          ? `${trimmed}${FOLLOW_UP_REMINDER}`
+          : trimmed;
+        const answer = applyAiMarker(withReminder);
+
+        // Get session info
+        const sessionInfo = session.getInfo();
+
+        const result: AskQuestionResult = {
+          status: "success",
+          question,
+          answer,
+          session_id: session.sessionId,
+          notebook_url: session.notebookUrl,
+          session_info: {
+            age_seconds: sessionInfo.age_seconds,
+            message_count: sessionInfo.message_count,
+            last_activity: sessionInfo.last_activity,
+          },
+          _provenance: PROVENANCE,
+          source_format,
+          ...(citationResult.citations.length > 0 && { sources: citationResult.citations }),
+        };
 
         // Progress: Complete
         await sendProgress?.("Question answered successfully!", 5, 5);
@@ -150,8 +189,7 @@ export class ToolHandlers {
         Object.assign(CONFIG, originalConfig);
       }
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
 
       // Special handling for rate limit errors
       if (error instanceof RateLimitError || errorMessage.toLowerCase().includes("rate limit")) {
@@ -195,7 +233,7 @@ export class ToolHandlers {
         message_count: number;
         notebook_url: string;
       }>;
-    }> 
+    }>
   > {
     log.info(`🔧 [TOOL] list_sessions called`);
 
@@ -220,16 +258,13 @@ export class ToolHandlers {
         })),
       };
 
-      log.success(
-        `✅ [TOOL] list_sessions completed (${result.active_sessions} sessions)`
-      );
+      log.success(`✅ [TOOL] list_sessions completed (${result.active_sessions} sessions)`);
       return {
         success: true,
         data: result,
       };
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       log.error(`❌ [TOOL] list_sessions failed: ${errorMessage}`);
       return {
         success: false,
@@ -241,9 +276,9 @@ export class ToolHandlers {
   /**
    * Handle close_session tool
    */
-  async handleCloseSession(args: { session_id: string }): Promise<
-    ToolResult<{ status: string; message: string; session_id: string }>
-  > {
+  async handleCloseSession(args: {
+    session_id: string;
+  }): Promise<ToolResult<{ status: string; message: string; session_id: string }>> {
     const { session_id } = args;
 
     log.info(`🔧 [TOOL] close_session called`);
@@ -270,8 +305,7 @@ export class ToolHandlers {
         };
       }
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       log.error(`❌ [TOOL] close_session failed: ${errorMessage}`);
       return {
         success: false,
@@ -283,9 +317,9 @@ export class ToolHandlers {
   /**
    * Handle reset_session tool
    */
-  async handleResetSession(args: { session_id: string }): Promise<
-    ToolResult<{ status: string; message: string; session_id: string }>
-  > {
+  async handleResetSession(args: {
+    session_id: string;
+  }): Promise<ToolResult<{ status: string; message: string; session_id: string }>> {
     const { session_id } = args;
 
     log.info(`🔧 [TOOL] reset_session called`);
@@ -314,8 +348,7 @@ export class ToolHandlers {
         },
       };
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       log.error(`❌ [TOOL] reset_session failed: ${errorMessage}`);
       return {
         success: false,
@@ -332,6 +365,9 @@ export class ToolHandlers {
       status: string;
       authenticated: boolean;
       notebook_url: string;
+      active_notebook_id: string | null;
+      active_notebook_name: string | null;
+      total_notebooks: number;
       active_sessions: number;
       max_sessions: number;
       session_timeout: number;
@@ -340,7 +376,7 @@ export class ToolHandlers {
       auto_login_enabled: boolean;
       stealth_enabled: boolean;
       troubleshooting_tip?: string;
-    }> 
+    }>
   > {
     log.info(`🔧 [TOOL] get_health called`);
 
@@ -352,10 +388,18 @@ export class ToolHandlers {
       // Get session stats
       const stats = this.sessionManager.getStats();
 
+      // Resolve current notebook from the library — `CONFIG.notebookUrl` is a
+      // legacy field (v1) that's no longer set in v2's library-driven flow.
+      const active = this.library.getActiveNotebook();
+      const notebookUrl = active?.url || CONFIG.notebookUrl || "not configured";
+
       const result = {
         status: "ok",
         authenticated,
-        notebook_url: CONFIG.notebookUrl || "not configured",
+        notebook_url: notebookUrl,
+        active_notebook_id: active?.id ?? null,
+        active_notebook_name: active?.name ?? null,
+        total_notebooks: this.library.getStats().total_notebooks,
         active_sessions: stats.active_sessions,
         max_sessions: stats.max_sessions,
         session_timeout: stats.session_timeout,
@@ -364,10 +408,10 @@ export class ToolHandlers {
         auto_login_enabled: CONFIG.autoLoginEnabled,
         stealth_enabled: CONFIG.stealthEnabled,
         // Add troubleshooting tip if not authenticated
-        ...((!authenticated) && {
+        ...(!authenticated && {
           troubleshooting_tip:
             "For fresh start with clean browser session: Close all Chrome instances → " +
-            "cleanup_data(confirm=true, preserve_library=true) → setup_auth"
+            "cleanup_data(confirm=true, preserve_library=true) → setup_auth",
         }),
       };
 
@@ -377,8 +421,7 @@ export class ToolHandlers {
         data: result,
       };
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       log.error(`❌ [TOOL] get_health failed: ${errorMessage}`);
       return {
         success: false,
@@ -405,7 +448,7 @@ export class ToolHandlers {
       message: string;
       authenticated: boolean;
       duration_seconds?: number;
-    }> 
+    }>
   > {
     const { show_browser, browser_options } = args;
 
@@ -460,8 +503,7 @@ export class ToolHandlers {
         };
       }
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+      const errorMessage = error instanceof Error ? error.message : String(error);
       const durationSeconds = (Date.now() - startTime) / 1000;
       log.error(`❌ [TOOL] setup_auth failed: ${errorMessage} (${durationSeconds.toFixed(1)}s)`);
       return {
@@ -496,7 +538,7 @@ export class ToolHandlers {
       message: string;
       authenticated: boolean;
       duration_seconds?: number;
-    }> 
+    }>
   > {
     const { show_browser, browser_options } = args;
 
@@ -556,9 +598,7 @@ export class ToolHandlers {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const durationSeconds = (Date.now() - startTime) / 1000;
-      log.error(
-        `❌ [TOOL] re_auth failed: ${errorMessage} (${durationSeconds.toFixed(1)}s)`
-      );
+      log.error(`❌ [TOOL] re_auth failed: ${errorMessage} (${durationSeconds.toFixed(1)}s)`);
       return {
         success: false,
         error: errorMessage,
@@ -572,7 +612,9 @@ export class ToolHandlers {
   /**
    * Handle add_notebook tool
    */
-  async handleAddNotebook(args: AddNotebookInput): Promise<ToolResult<{ notebook: any }>> {
+  async handleAddNotebook(
+    args: AddNotebookInput
+  ): Promise<ToolResult<{ notebook: NotebookEntry }>> {
     log.info(`🔧 [TOOL] add_notebook called`);
     log.info(`  Name: ${args.name}`);
 
@@ -596,7 +638,7 @@ export class ToolHandlers {
   /**
    * Handle list_notebooks tool
    */
-  async handleListNotebooks(): Promise<ToolResult<{ notebooks: any[] }>> {
+  async handleListNotebooks(): Promise<ToolResult<{ notebooks: NotebookEntry[] }>> {
     log.info(`🔧 [TOOL] list_notebooks called`);
 
     try {
@@ -619,7 +661,7 @@ export class ToolHandlers {
   /**
    * Handle get_notebook tool
    */
-  async handleGetNotebook(args: { id: string }): Promise<ToolResult<{ notebook: any }>> {
+  async handleGetNotebook(args: { id: string }): Promise<ToolResult<{ notebook: NotebookEntry }>> {
     log.info(`🔧 [TOOL] get_notebook called`);
     log.info(`  ID: ${args.id}`);
 
@@ -651,7 +693,9 @@ export class ToolHandlers {
   /**
    * Handle select_notebook tool
    */
-  async handleSelectNotebook(args: { id: string }): Promise<ToolResult<{ notebook: any }>> {
+  async handleSelectNotebook(args: {
+    id: string;
+  }): Promise<ToolResult<{ notebook: NotebookEntry }>> {
     log.info(`🔧 [TOOL] select_notebook called`);
     log.info(`  ID: ${args.id}`);
 
@@ -675,7 +719,9 @@ export class ToolHandlers {
   /**
    * Handle update_notebook tool
    */
-  async handleUpdateNotebook(args: UpdateNotebookInput): Promise<ToolResult<{ notebook: any }>> {
+  async handleUpdateNotebook(
+    args: UpdateNotebookInput
+  ): Promise<ToolResult<{ notebook: NotebookEntry }>> {
     log.info(`🔧 [TOOL] update_notebook called`);
     log.info(`  ID: ${args.id}`);
 
@@ -699,7 +745,9 @@ export class ToolHandlers {
   /**
    * Handle remove_notebook tool
    */
-  async handleRemoveNotebook(args: { id: string }): Promise<ToolResult<{ removed: boolean; closed_sessions: number }>> {
+  async handleRemoveNotebook(args: {
+    id: string;
+  }): Promise<ToolResult<{ removed: boolean; closed_sessions: number }>> {
     log.info(`🔧 [TOOL] remove_notebook called`);
     log.info(`  ID: ${args.id}`);
 
@@ -715,9 +763,7 @@ export class ToolHandlers {
 
       const removed = this.library.removeNotebook(args.id);
       if (removed) {
-        const closedSessions = await this.sessionManager.closeSessionsForNotebook(
-          notebook.url
-        );
+        const closedSessions = await this.sessionManager.closeSessionsForNotebook(notebook.url);
         log.success(`✅ [TOOL] remove_notebook completed`);
         return {
           success: true,
@@ -743,7 +789,9 @@ export class ToolHandlers {
   /**
    * Handle search_notebooks tool
    */
-  async handleSearchNotebooks(args: { query: string }): Promise<ToolResult<{ notebooks: any[] }>> {
+  async handleSearchNotebooks(args: {
+    query: string;
+  }): Promise<ToolResult<{ notebooks: NotebookEntry[] }>> {
     log.info(`🔧 [TOOL] search_notebooks called`);
     log.info(`  Query: "${args.query}"`);
 
@@ -767,7 +815,7 @@ export class ToolHandlers {
   /**
    * Handle get_library_stats tool
    */
-  async handleGetLibraryStats(): Promise<ToolResult<any>> {
+  async handleGetLibraryStats(): Promise<ToolResult<LibraryStats>> {
     log.info(`🔧 [TOOL] get_library_stats called`);
 
     try {
@@ -792,14 +840,18 @@ export class ToolHandlers {
    *
    * ULTRATHINK Deep Cleanup - scans entire system for ALL NotebookLM MCP files
    */
-  async handleCleanupData(
-    args: { confirm: boolean; preserve_library?: boolean }
-  ): Promise<
+  async handleCleanupData(args: { confirm: boolean; preserve_library?: boolean }): Promise<
     ToolResult<{
       status: string;
       mode: string;
       preview?: {
-        categories: Array<{ name: string; description: string; paths: string[]; totalBytes: number; optional: boolean }>;
+        categories: Array<{
+          name: string;
+          description: string;
+          paths: string[];
+          totalBytes: number;
+          optional: boolean;
+        }>;
         totalPaths: number;
         totalSizeBytes: number;
       };
@@ -809,7 +861,7 @@ export class ToolHandlers {
         totalSizeBytes: number;
         categorySummary: Record<string, { count: number; bytes: number }>;
       };
-    }> 
+    }>
   > {
     const { confirm, preserve_library = false } = args;
 
@@ -830,7 +882,9 @@ export class ToolHandlers {
         const preview = await cleanupManager.getCleanupPaths(mode, preserve_library);
         const platformInfo = cleanupManager.getPlatformInfo();
 
-        log.info(`  Found ${preview.totalPaths.length} items (${cleanupManager.formatBytes(preview.totalSizeBytes)})`);
+        log.info(
+          `  Found ${preview.totalPaths.length} items (${cleanupManager.formatBytes(preview.totalSizeBytes)})`
+        );
         log.info(`  Platform: ${platformInfo.platform}`);
 
         return {
@@ -852,7 +906,9 @@ export class ToolHandlers {
         const result = await cleanupManager.performCleanup(mode, preserve_library);
 
         if (result.success) {
-          log.success(`✅ [TOOL] cleanup_data completed - deleted ${result.deletedPaths.length} items`);
+          log.success(
+            `✅ [TOOL] cleanup_data completed - deleted ${result.deletedPaths.length} items`
+          );
         } else {
           log.warning(`⚠️  [TOOL] cleanup_data completed with ${result.failedPaths.length} errors`);
         }
@@ -878,6 +934,178 @@ export class ToolHandlers {
         success: false,
         error: errorMessage,
       };
+    }
+  }
+
+  /**
+   * Resolve a notebook URL the same way `handleAskQuestion` does. Used by the
+   * new source/audio tools so we don't duplicate the lookup logic.
+   */
+  private async resolveNotebookUrl(
+    notebookId?: string,
+    notebookUrl?: string
+  ): Promise<string | undefined> {
+    if (notebookUrl) return notebookUrl;
+    if (notebookId) {
+      const nb = this.library.getNotebook(notebookId);
+      if (!nb) throw new Error(`Notebook not found in library: ${notebookId}`);
+      return nb.url;
+    }
+    const active = this.library.getActiveNotebook();
+    return active?.url;
+  }
+
+  /**
+   * Handle add_source tool (issue #25).
+   */
+  async handleAddSource(args: {
+    type: "url" | "text";
+    content: string;
+    title?: string;
+    session_id?: string;
+    notebook_id?: string;
+    notebook_url?: string;
+    show_browser?: boolean;
+  }): Promise<ToolResult<{ result: AddSourceResult }>> {
+    log.info(`🔧 [TOOL] add_source called (type=${args.type})`);
+    const originalConfig = { ...CONFIG };
+    if (args.show_browser !== undefined) {
+      const effectiveConfig = applyBrowserOptions(undefined, args.show_browser);
+      Object.assign(CONFIG, effectiveConfig);
+    }
+    const overrideHeadless = args.show_browser === undefined ? undefined : args.show_browser;
+    try {
+      const url = await this.resolveNotebookUrl(args.notebook_id, args.notebook_url);
+      const session = await this.sessionManager.getOrCreateSession(
+        args.session_id,
+        url,
+        overrideHeadless
+      );
+      const result = await session.addSource({
+        type: args.type,
+        content: args.content,
+        title: args.title,
+      });
+      return { success: result.success, data: { result } };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.error(`❌ [TOOL] add_source failed: ${msg}`);
+      return { success: false, error: msg };
+    } finally {
+      Object.assign(CONFIG, originalConfig);
+    }
+  }
+
+  /**
+   * Handle generate_audio tool (issue #11).
+   */
+  async handleGenerateAudio(args: {
+    custom_prompt?: string;
+    timeout_ms?: number;
+    wait_for_completion?: boolean;
+    session_id?: string;
+    notebook_id?: string;
+    notebook_url?: string;
+    show_browser?: boolean;
+  }): Promise<ToolResult<{ result: AudioGenerationResult }>> {
+    log.info(`🔧 [TOOL] generate_audio called`);
+    const originalConfig = { ...CONFIG };
+    if (args.show_browser !== undefined) {
+      Object.assign(CONFIG, applyBrowserOptions(undefined, args.show_browser));
+    }
+    const overrideHeadless = args.show_browser === undefined ? undefined : args.show_browser;
+    try {
+      const url = await this.resolveNotebookUrl(args.notebook_id, args.notebook_url);
+      const session = await this.sessionManager.getOrCreateSession(
+        args.session_id,
+        url,
+        overrideHeadless
+      );
+      const result = await session.generateAudio({
+        customPrompt: args.custom_prompt,
+        timeoutMs: args.timeout_ms,
+        waitForCompletion: args.wait_for_completion ?? false,
+      });
+      // `started` and `in_progress` count as success — the generation is on
+      // its way; the caller polls `get_audio_status` for completion.
+      const ok =
+        result.status === "ready" ||
+        result.status === "started" ||
+        result.status === "in_progress";
+      return { success: ok, data: { result } };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.error(`❌ [TOOL] generate_audio failed: ${msg}`);
+      return { success: false, error: msg };
+    } finally {
+      Object.assign(CONFIG, originalConfig);
+    }
+  }
+
+  /**
+   * Handle get_audio_status tool — non-blocking poll for Audio Overview state.
+   */
+  async handleGetAudioStatus(args: {
+    session_id?: string;
+    notebook_id?: string;
+    notebook_url?: string;
+    show_browser?: boolean;
+  }): Promise<ToolResult<{ result: AudioGenerationResult }>> {
+    log.info(`🔧 [TOOL] get_audio_status called`);
+    const originalConfig = { ...CONFIG };
+    if (args.show_browser !== undefined) {
+      Object.assign(CONFIG, applyBrowserOptions(undefined, args.show_browser));
+    }
+    const overrideHeadless = args.show_browser === undefined ? undefined : args.show_browser;
+    try {
+      const url = await this.resolveNotebookUrl(args.notebook_id, args.notebook_url);
+      const session = await this.sessionManager.getOrCreateSession(
+        args.session_id,
+        url,
+        overrideHeadless
+      );
+      const result = await session.getAudioStatus();
+      return { success: true, data: { result } };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.error(`❌ [TOOL] get_audio_status failed: ${msg}`);
+      return { success: false, error: msg };
+    } finally {
+      Object.assign(CONFIG, originalConfig);
+    }
+  }
+
+  /**
+   * Handle download_audio tool (issue #11).
+   */
+  async handleDownloadAudio(args: {
+    destination_dir: string;
+    session_id?: string;
+    notebook_id?: string;
+    notebook_url?: string;
+    show_browser?: boolean;
+  }): Promise<ToolResult<{ result: DownloadAudioResult }>> {
+    log.info(`🔧 [TOOL] download_audio called`);
+    const originalConfig = { ...CONFIG };
+    if (args.show_browser !== undefined) {
+      Object.assign(CONFIG, applyBrowserOptions(undefined, args.show_browser));
+    }
+    const overrideHeadless = args.show_browser === undefined ? undefined : args.show_browser;
+    try {
+      const url = await this.resolveNotebookUrl(args.notebook_id, args.notebook_url);
+      const session = await this.sessionManager.getOrCreateSession(
+        args.session_id,
+        url,
+        overrideHeadless
+      );
+      const result = await session.downloadAudio(args.destination_dir);
+      return { success: result.success, data: { result } };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      log.error(`❌ [TOOL] download_audio failed: ${msg}`);
+      return { success: false, error: msg };
+    } finally {
+      Object.assign(CONFIG, originalConfig);
     }
   }
 

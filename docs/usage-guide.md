@@ -1,245 +1,284 @@
-# Advanced Usage Guide
-
-This guide covers advanced usage patterns, best practices, and detailed examples for the NotebookLM MCP server.
-
-> 📘 For installation and quick start, see the main [README](../README.md).
-
-## Research Patterns
-
-### The Iterative Research Pattern
-
-The server is designed to make your agent **ask questions automatically** with NotebookLM. Here's how to leverage this:
-
-1. **Start with broad context**
-   ```
-   "Before implementing the webhook system, research the complete webhook architecture in NotebookLM, including error handling, retry logic, and security considerations."
-   ```
-
-2. **The agent will automatically**:
-   - Ask an initial question to NotebookLM
-   - Read the reminder at the end of each response
-   - Ask follow-up questions to gather more details
-   - Continue until it has comprehensive understanding
-   - Only then provide you with a complete answer
-
-3. **Session management**
-   - The agent maintains the same `session_id` throughout the research
-   - This preserves context across multiple questions
-   - Sessions auto-cleanup after 15 minutes of inactivity
-
-### Deep Dive Example
-
-```
-User: "I need to implement OAuth2 with refresh tokens. Research the complete flow first."
-
-Agent behavior:
-1. Asks NotebookLM: "How does OAuth2 refresh token flow work?"
-2. Gets answer with reminder to ask more
-3. Asks: "What are the security best practices for storing refresh tokens?"
-4. Asks: "How to handle token expiration and renewal?"
-5. Asks: "What are common implementation pitfalls?"
-6. Synthesizes all answers into comprehensive implementation plan
-```
-
-## Notebook Management Strategies
-
-### Multi-Project Setup
-
-Organize notebooks by project or domain:
-
-```
-Production Docs Notebook → APIs, deployment, monitoring
-Development Notebook → Local setup, debugging, testing
-Architecture Notebook → System design, patterns, decisions
-Legacy Code Notebook → Old systems, migration guides
-```
-
-### Notebook Switching Patterns
-
-```
-"For this bug fix, use the Legacy Code notebook."
-"Switch to the Architecture notebook for this design discussion."
-"Use the Production Docs for deployment steps."
-```
-
-### Metadata Best Practices
-
-When adding notebooks, provide rich metadata:
-```
-"Add this notebook with description: 'Complete React 18 documentation including hooks, performance, and migration guides' and tags: react, frontend, hooks, performance"
-```
-
-## Authentication Management
-
-### Account Rotation Strategy
-
-Free tier provides 50 queries/day per account. Maximize usage:
-
-1. **Primary account** → Main development work
-2. **Secondary account** → Testing and validation
-3. **Backup account** → Emergency queries when others are exhausted
-
-```
-"Switch to secondary account" → When approaching limit
-"Check health status" → Verify which account is active
-```
-
-### Handling Auth Failures
-
-The agent can self-repair authentication:
-
-```
-"NotebookLM says I'm logged out—repair authentication"
-```
-
-This triggers: `get_health` → `setup_auth` → `get_health`
-
-## Advanced Configuration
-
-### Performance Optimization
-
-For faster interactions during development:
-```bash
-STEALTH_ENABLED=false  # Disable human-like typing
-TYPING_WPM_MAX=500     # Increase typing speed
-HEADLESS=false         # See what's happening
-```
-
-### Debugging Sessions
-
-Enable browser visibility to watch the live conversation:
-```
-"Research this issue and show me the browser"
-```
-
-Your agent automatically enables browser visibility for that research session.
-
-### Session Management
-
-Monitor active sessions:
-```
-"List all active NotebookLM sessions"
-"Close inactive sessions to free resources"
-"Reset the stuck session for notebook X"
-```
-
-## Complex Workflows
-
-### Multi-Stage Research
-
-For complex implementations requiring multiple knowledge sources:
-
-```
-Stage 1: "Research the API structure in the API notebook"
-Stage 2: "Switch to Architecture notebook and research the service patterns"
-Stage 3: "Use the Security notebook to research authentication requirements"
-Stage 4: "Synthesize all findings into implementation plan"
-```
-
-### Validation Workflow
-
-Cross-reference information across notebooks:
-
-```
-1. "In Production notebook, find the current API version"
-2. "Switch to Migration notebook, check compatibility notes"
-3. "Verify in Architecture notebook if this aligns with our patterns"
-```
-
-## Tool Integration Patterns
-
-### Direct Tool Calls
-
-For manual scripting, capture and reuse session IDs:
-
-```json
-// First call - capture session_id
-{
-  "tool": "ask_question",
-  "question": "What is the webhook structure?",
-  "notebook_id": "abc123"
-}
-
-// Follow-up - reuse session_id
-{
-  "tool": "ask_question",
-  "question": "Show me error handling examples",
-  "session_id": "captured_session_id_here"
-}
-```
-
-### Resource URIs
-
-Access library data programmatically:
-- `notebooklm://library` - Full library JSON
-- `notebooklm://library/{id}` - Specific notebook metadata
-
-## Best Practices
-
-### 1. **Context Preservation**
-- Always let the agent complete its research cycle
-- Don't interrupt between questions in a research session
-- Use descriptive notebook names for easy switching
-
-### 2. **Knowledge Base Quality**
-- Upload comprehensive documentation to NotebookLM
-- Merge related docs into single notebooks (up to 500k words)
-- Update notebooks when documentation changes
-
-### 3. **Error Recovery**
-- The server auto-recovers from browser crashes
-- Sessions rebuild automatically if context is lost
-- Profile corruption triggers automatic cleanup
-
-### 4. **Resource Management**
-- Close unused sessions to free memory
-- The server maintains max 10 concurrent sessions
-- Inactive sessions auto-close after 15 minutes
-
-### 5. **Security Considerations**
-- Use dedicated Google accounts for NotebookLM
-- Never share authentication profiles between projects
-- Backup `library.json` for important notebook collections
-
-## Troubleshooting Patterns
-
-### When NotebookLM returns incomplete answers
-```
-"The answer seems incomplete. Ask NotebookLM for more specific details about [topic]"
-```
-
-### When hitting rate limits
-```
-"We've hit the rate limit. Re-authenticate with the backup account"
-```
-
-### When browser seems stuck
-```
-"Reset all NotebookLM sessions and try again"
-```
-
-## Example Conversations
-
-### Complete Feature Implementation
-```
-User: "I need to implement a webhook system with retry logic"
-
-You: "Research webhook patterns with retry logic in NotebookLM first"
-Agent: [Researches comprehensively, asking 4-5 follow-up questions]
-Agent: "Based on my research, here's the implementation..."
-[Provides detailed code with patterns from NotebookLM]
-```
-
-### Architecture Decision
-```
-User: "Should we use microservices or monolith for this feature?"
-
-You: "Research our architecture patterns and decision criteria in the Architecture notebook"
-Agent: [Gathers context about existing patterns, scalability needs, team constraints]
-Agent: "According to our architecture guidelines..."
-[Provides recommendation based on documented patterns]
-```
+# Usage Guide
+
+Practical end-to-end walkthroughs against v2.0.0. Each section is a self-contained recipe with the exact tool calls / curl commands.
+
+- [First-time setup](#first-time-setup)
+- [Multi-turn session pattern](#multi-turn-session-pattern)
+- [Citations workflow](#citations-workflow)
+- [Audio Overview generation + download](#audio-overview-generation--download)
+- [Multi-account switching](#multi-account-switching)
+- [HTTP transport for n8n / Zapier](#http-transport-for-n8n--zapier)
 
 ---
 
-Remember: The power of this integration lies in letting your agent **ask multiple questions** – gathering context and building comprehensive understanding before responding. Don't rush the research phase!
+## First-time setup
+
+### 1. Install and start
+
+```bash
+npx notebooklm-mcp@latest
+```
+
+Wire it into your MCP client of choice (see the [README](../README.md#connect-to-claude-code)).
+
+### 2. Authenticate
+
+Call `setup_auth`. A Chrome window opens. Log in to the Google account that owns the NotebookLM notebooks you want to query. Close the browser when done.
+
+```json
+{ "name": "setup_auth", "arguments": {} }
+```
+
+Verify:
+
+```json
+{ "name": "get_health", "arguments": {} }
+```
+
+Expect `"authenticated": true`.
+
+### 3. Add a notebook to the local library
+
+Get a NotebookLM share-URL: open the notebook in `notebooklm.google.com`, click _Share → Anyone with the link → Copy link_. Then:
+
+```json
+{
+  "name": "add_notebook",
+  "arguments": {
+    "url": "https://notebooklm.google.com/notebook/abcd-efgh",
+    "name": "n8n Documentation",
+    "description": "n8n core docs + builtin nodes",
+    "topics": ["workflow automation", "n8n", "node configuration"],
+    "use_cases": ["building n8n workflows", "debugging n8n executions"],
+    "tags": ["docs", "n8n"]
+  }
+}
+```
+
+### 4. Ask the first question
+
+```json
+{
+  "name": "ask_question",
+  "arguments": {
+    "question": "What is the recommended retry pattern for the HTTP Request node?"
+  }
+}
+```
+
+Capture `session_id` from the response — you will reuse it for follow-ups.
+
+---
+
+## Multi-turn session pattern
+
+Reusing `session_id` keeps NotebookLM's conversational context. The browser session also stays open, so each follow-up is faster.
+
+```json
+// 1. Open broad — captures session_id
+{ "name": "ask_question", "arguments": {
+  "question": "Give me an overview of the n8n error handling architecture."
+}}
+// → response.session_id = "ses_abc123"
+
+// 2. Drill in
+{ "name": "ask_question", "arguments": {
+  "question": "What's the recommended retry/backoff pattern for HTTP nodes?",
+  "session_id": "ses_abc123"
+}}
+
+// 3. Edge cases
+{ "name": "ask_question", "arguments": {
+  "question": "Common pitfalls when retrying webhook-triggered workflows?",
+  "session_id": "ses_abc123"
+}}
+
+// 4. Production sample
+{ "name": "ask_question", "arguments": {
+  "question": "Show me a production example combining retry + circuit-breaker.",
+  "session_id": "ses_abc123"
+}}
+```
+
+When the task changes, either:
+
+- Reset the same session: `{ "name": "reset_session", "arguments": { "session_id": "ses_abc123" } }`
+- Close it: `{ "name": "close_session", "arguments": { "session_id": "ses_abc123" } }` — and start a new one with no `session_id`.
+
+Sessions auto-expire after `SESSION_TIMEOUT` seconds of inactivity (default `900` = 15 min).
+
+---
+
+## Citations workflow
+
+Set `source_format` on `ask_question`. Four modes:
+
+### `none` (default)
+
+Raw answer. No `sources` field.
+
+### `inline`
+
+```json
+{ "name": "ask_question", "arguments": {
+  "question": "How does refresh-token rotation work?",
+  "source_format": "inline"
+}}
+```
+
+`[1]` markers in the answer text get replaced with `(source name — short excerpt)` inline.
+
+### `footnotes`
+
+```json
+{ "name": "ask_question", "arguments": {
+  "question": "How does refresh-token rotation work?",
+  "source_format": "footnotes"
+}}
+```
+
+Response (abridged):
+
+```jsonc
+{
+  "answer": "[AI-GENERATED ...] Refresh tokens are rotated on every refresh request [1]. The previous token is revoked server-side [2].\n\nSources:\n[1] auth-spec.pdf — \"Refresh tokens MUST be rotated…\"\n[2] auth-spec.pdf — \"On rotation, the previous token MUST be invalidated…\"",
+  "sources": [
+    { "index": 1, "title": "auth-spec.pdf", "excerpt": "Refresh tokens MUST be rotated…" },
+    { "index": 2, "title": "auth-spec.pdf", "excerpt": "On rotation, the previous token MUST be invalidated…" }
+  ],
+  "source_format": "footnotes"
+}
+```
+
+### `json`
+
+Answer text is left untouched. Citations are returned only as a structured array on `sources`. Use this when you want to render citations yourself.
+
+---
+
+## Audio Overview generation + download
+
+Two-step workflow.
+
+### 1. Generate
+
+```json
+{
+  "name": "generate_audio",
+  "arguments": {
+    "custom_prompt": "Focus on the migration steps and breaking changes",
+    "timeout_ms": 900000
+  }
+}
+```
+
+Generation can take several minutes — keep `timeout_ms` generous. The default is 600 000 ms (10 min).
+
+### 2. Download
+
+```json
+{
+  "name": "download_audio",
+  "arguments": {
+    "destination_dir": "/Users/me/Downloads/notebooklm"
+  }
+}
+```
+
+Result includes the absolute `file_path` and size in bytes.
+
+If you call `download_audio` before any Audio Overview has been generated, the call returns an error pointing at `generate_audio`. Run them in order, in the same notebook.
+
+---
+
+## Multi-account switching
+
+Run two parallel installations against different Google accounts:
+
+```bash
+# Terminal A: work account
+npx notebooklm-mcp@latest --account work
+
+# Terminal B: personal account
+npx notebooklm-mcp@latest --account personal
+```
+
+Each account gets its own Chrome profile under `<dataDir>/accounts/<name>/`. The first run for a new account requires its own `setup_auth`. Switching is just a matter of starting the server with a different `--account` flag (or `NOTEBOOKLM_ACCOUNT` env).
+
+Use cases:
+
+- Working notebooks on a corporate Google account, side-projects on a personal one.
+- Rotating between two free-tier accounts to extend the daily quota.
+
+There is no shared library between accounts — each account has its own `library.json`. If you want the same library across accounts, copy `library.json` between the two `accounts/<name>/` directories manually.
+
+---
+
+## HTTP transport for n8n / Zapier
+
+Start the server in HTTP mode:
+
+```bash
+npx notebooklm-mcp@latest --transport http --port 3000 --host 0.0.0.0
+```
+
+The two operations:
+
+| Method | Path |
+|---|---|
+| `POST` | `/mcp` |
+| `GET` | `/healthz` |
+
+### 1. Initialize a session
+
+```bash
+curl -i -X POST http://localhost:3000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2025-03-26",
+      "capabilities": {},
+      "clientInfo": { "name": "curl", "version": "0.0.1" }
+    }
+  }'
+```
+
+Capture the `Mcp-Session-Id` response header. Pass it as a request header on every subsequent call.
+
+### 2. Ask a question
+
+```bash
+curl -X POST http://localhost:3000/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Mcp-Session-Id: <session-id-from-step-1>' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "ask_question",
+      "arguments": {
+        "question": "What is the n8n Code node best for?",
+        "source_format": "footnotes"
+      }
+    }
+  }'
+```
+
+The response is the standard MCP `tools/call` envelope. The actual tool output lives under `result.content[0].text` as a JSON string.
+
+### Liveness probe
+
+```bash
+curl http://localhost:3000/healthz
+# {"status":"ok","protocol":"mcp-streamable-http"}
+```
+
+### Notes
+
+- The default bind address is `127.0.0.1`. Bind to `0.0.0.0` only on a trusted network.
+- Sessions are kept in process memory; restarting the server invalidates all sessions.
+- For n8n, Zapier, and similar HTTP-only callers, an "HTTP Request" node configured with a per-execution session-id store is enough — initialize once at workflow start, reuse the session for the rest of the run, and let the `DELETE /mcp` route close it cleanly at the end.

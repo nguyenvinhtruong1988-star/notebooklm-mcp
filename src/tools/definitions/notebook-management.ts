@@ -1,251 +1,274 @@
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
+/**
+ * Library tools — manage the local catalogue of NotebookLM notebooks the
+ * user has registered with this server. The cross-tool ID flow (where
+ * `id` comes from, where it's used) lives in the server-level
+ * `instructions` string.
+ */
 export const notebookManagementTools: Tool[] = [
   {
     name: "add_notebook",
     description:
-      `PERMISSION REQUIRED — Only when user explicitly asks to add a notebook.
-
-## Conversation Workflow (Mandatory)
-When the user says: "I have a NotebookLM with X"
-
-1) Ask URL: "What is the NotebookLM URL?"
-2) Ask content: "What knowledge is inside?" (1–2 sentences)
-3) Ask topics: "Which topics does it cover?" (3–5)
-4) Ask use cases: "When should we consult it?"
-5) Propose metadata and confirm:
-   - Name: [suggested]
-   - Description: [from user]
-   - Topics: [list]
-   - Use cases: [list]
-   "Add it to your library now?"
-6) Only after explicit "Yes" → call this tool
-
-## Rules
-- Do not add without user permission
-- Do not guess metadata — ask concisely
-- Confirm summary before calling the tool
-
-## Example
-User: "I have a notebook with n8n docs"
-You: Ask URL → content → topics → use cases; propose summary
-User: "Yes"
-You: Call add_notebook
-
-## How to Get a NotebookLM Share Link
-
-Visit https://notebooklm.google/ → Login (free: 100 notebooks, 50 sources each, 500k words, 50 daily queries)
-1) Click "+ New" (top right) → Upload sources (docs, knowledge)
-2) Click "Share" (top right) → Select "Anyone with the link"
-3) Click "Copy link" (bottom left) → Give this link to Claude
-
-(Upgraded: Google AI Pro/Ultra gives 5x higher limits)`,
+      "Register a NotebookLM notebook in the local library so it can be " +
+      "queried with `ask_question`, ingested into with `add_source`, etc.\n\n" +
+      "## Required URL\n" +
+      "The user must supply a NotebookLM share-link. To produce one:\n" +
+      "  1. Open https://notebooklm.google\n" +
+      '  2. Open the notebook → click "Share" (top right)\n' +
+      '  3. Set "Anyone with the link" → "Copy link"\n\n' +
+      "## Permission workflow\n" +
+      "Do NOT call this tool unprompted. The expected dialogue is:\n" +
+      "  1. Ask for the URL\n" +
+      "  2. Ask what knowledge it contains (1–2 sentences) → `description`\n" +
+      "  3. Ask which topics it covers (3–5) → `topics`\n" +
+      "  4. Ask when it should be consulted → `use_cases`\n" +
+      "  5. Propose a `name` and the metadata back to the user\n" +
+      "  6. Only after explicit confirmation, call `add_notebook`.\n\n" +
+      "Free-tier limits: 100 notebooks · 50 sources each · 50 queries/day. " +
+      "Google AI Pro/Ultra raises these 5×.",
     inputSchema: {
       type: "object",
       properties: {
         url: {
           type: "string",
-          description: "The NotebookLM notebook URL",
+          description:
+            "NotebookLM share URL. Format: " +
+            "`https://notebooklm.google.com/notebook/<uuid>` (with optional " +
+            "`?authuser=N` suffix).",
         },
         name: {
           type: "string",
-          description: "Display name for the notebook (e.g., 'n8n Documentation')",
+          description: "Display name (e.g. 'n8n Documentation').",
         },
         description: {
           type: "string",
-          description: "What knowledge/content is in this notebook",
+          description: "1–2 sentence summary of what the notebook contains.",
         },
         topics: {
           type: "array",
           items: { type: "string" },
-          description: "Topics covered in this notebook",
+          description: "3–5 topics covered. Used by `search_notebooks`.",
         },
         content_types: {
           type: "array",
           items: { type: "string" },
           description:
-            "Types of content (e.g., ['documentation', 'examples', 'best practices'])",
+            "Content classification, e.g. ['documentation', 'examples', 'best practices'].",
         },
         use_cases: {
           type: "array",
           items: { type: "string" },
-          description: "When should Claude use this notebook (e.g., ['Implementing n8n workflows'])",
+          description:
+            "When the LLM should consult this notebook, e.g. ['Implementing n8n workflows'].",
         },
         tags: {
           type: "array",
           items: { type: "string" },
-          description: "Optional tags for organization",
+          description: "Optional free-form tags for organisation.",
         },
       },
       required: ["url", "name", "description", "topics"],
+    },
+    annotations: {
+      title: "Add notebook to library",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
     },
   },
   {
     name: "list_notebooks",
     description:
-      "List all library notebooks with metadata (name, topics, use cases, URL). " +
-      "Use this to present options, then ask which notebook to use for the task.",
+      "List every notebook in the local library with its metadata " +
+      "(`id`, `name`, `description`, `topics`, `tags`, `url`, `use_count`, " +
+      "etc.). Use the returned `id` for `select_notebook`, `update_notebook`, " +
+      "`get_notebook`, `remove_notebook`, or as `notebook_id` on " +
+      "`ask_question` / `add_source` / audio tools.",
     inputSchema: {
       type: "object",
       properties: {},
     },
+    annotations: {
+      title: "List notebooks",
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "get_notebook",
-    description: "Get detailed information about a specific notebook by ID",
+    description:
+      "Fetch full metadata for one notebook by id. Use to verify what's " +
+      "currently stored before calling `update_notebook`, or to show the " +
+      "user the exact `description`/`topics`/`use_cases` Claude has for it.",
     inputSchema: {
       type: "object",
       properties: {
         id: {
           type: "string",
-          description: "The notebook ID",
+          description: "Notebook id, as returned by `list_notebooks`/`search_notebooks`.",
         },
       },
       required: ["id"],
+    },
+    annotations: {
+      title: "Get notebook",
+      readOnlyHint: true,
+      openWorldHint: false,
     },
   },
   {
     name: "select_notebook",
     description:
-      `Set a notebook as the active default (used when ask_question has no notebook_id).
-
-## When To Use
-- User switches context: "Let's work on React now"
-- User asks explicitly to activate a notebook
-- Obvious task change requires another notebook
-
-## Auto-Switching
-- Safe to auto-switch if the context is clear and you announce it:
-  "Switching to React notebook for this task..."
-- If ambiguous, ask: "Switch to [notebook] for this task?"
-
-## Example
-User: "Now let's build the React frontend"
-You: "Switching to React notebook..." (call select_notebook)`,
+      "Mark a notebook as the active default. After this, `ask_question`, " +
+      "`add_source`, and the audio tools resolve to that notebook when the " +
+      "caller omits `notebook_id` / `notebook_url`.\n\n" +
+      "When to call:\n" +
+      "  • The user explicitly switches context (e.g. \"Let's work on " +
+      "React now\")\n" +
+      "  • Task obviously needs a different notebook than the current one — " +
+      "announce the switch (\"Switching to the React notebook…\") before " +
+      "calling.\n" +
+      "  • If the right notebook is ambiguous, ask the user first instead " +
+      "of guessing.",
     inputSchema: {
       type: "object",
       properties: {
         id: {
           type: "string",
-          description: "The notebook ID to activate",
+          description: "Notebook id to activate (from `list_notebooks`).",
         },
       },
       required: ["id"],
+    },
+    annotations: {
+      title: "Select active notebook",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   {
     name: "update_notebook",
     description:
-      `Update notebook metadata based on user intent.
-
-## Pattern
-1) Identify target notebook and fields (topics, description, use_cases, tags, url)
-2) Propose the exact change back to the user
-3) After explicit confirmation, call this tool
-
-## Examples
-- User: "React notebook also covers Next.js 14"
-  You: "Add 'Next.js 14' to topics for React?"
-  User: "Yes" → call update_notebook
-
-- User: "Include error handling in n8n description"
-  You: "Update the n8n description to mention error handling?"
-  User: "Yes" → call update_notebook
-
-Tip: You may update multiple fields at once if requested.`,
+      "Patch metadata fields on an existing notebook. Pass `id` plus any " +
+      "subset of `name`, `description`, `topics`, `content_types`, " +
+      "`use_cases`, `tags`, `url` — only supplied fields change.\n\n" +
+      "Workflow: identify the target notebook → propose the exact change " +
+      "back to the user → call only after explicit confirmation. Multiple " +
+      "fields can be updated in one call.",
     inputSchema: {
       type: "object",
       properties: {
         id: {
           type: "string",
-          description: "The notebook ID to update",
+          description: "Notebook id to update (from `list_notebooks`).",
         },
-        name: {
-          type: "string",
-          description: "New display name",
-        },
-        description: {
-          type: "string",
-          description: "New description",
-        },
+        name: { type: "string", description: "New display name." },
+        description: { type: "string", description: "New 1–2 sentence summary." },
         topics: {
           type: "array",
           items: { type: "string" },
-          description: "New topics list",
+          description: "Replacement topics list (full replacement, not append).",
         },
         content_types: {
           type: "array",
           items: { type: "string" },
-          description: "New content types",
+          description: "Replacement content classification.",
         },
         use_cases: {
           type: "array",
           items: { type: "string" },
-          description: "New use cases",
+          description: "Replacement use-cases.",
         },
         tags: {
           type: "array",
           items: { type: "string" },
-          description: "New tags",
+          description: "Replacement tags.",
         },
         url: {
           type: "string",
-          description: "New notebook URL",
+          description: "New NotebookLM share URL (rarely needed).",
         },
       },
       required: ["id"],
+    },
+    annotations: {
+      title: "Update notebook metadata",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   {
     name: "remove_notebook",
     description:
-      `Dangerous — requires explicit user confirmation.
-
-## Confirmation Workflow
-1) User requests removal ("Remove the React notebook")
-2) Look up full name to confirm
-3) Ask: "Remove '[notebook_name]' from your library? (Does not delete the actual NotebookLM notebook)"
-4) Only on explicit "Yes" → call remove_notebook
-
-Never remove without permission or based on assumptions.
-
-Example:
-User: "Delete the old React notebook"
-You: "Remove 'React Best Practices' from your library?"
-User: "Yes" → call remove_notebook`,
+      "Remove a notebook from the local library. **Does NOT delete the " +
+      "actual NotebookLM notebook on Google's side** — only the local " +
+      "metadata entry. Active sessions on this notebook are closed.\n\n" +
+      "Confirmation workflow: look up the notebook by id, ask the user " +
+      "\"Remove '[name]' from your library?\" — only call after a clear yes.",
     inputSchema: {
       type: "object",
       properties: {
         id: {
           type: "string",
-          description: "The notebook ID to remove",
+          description: "Notebook id to remove (from `list_notebooks`).",
         },
       },
       required: ["id"],
+    },
+    annotations: {
+      title: "Remove notebook from library",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
   {
     name: "search_notebooks",
     description:
-      "Search library by query (name, description, topics, tags). " +
-      "Use to propose relevant notebooks for the task and then ask which to use.",
+      "Search the library by free-text query — matches against `name`, " +
+      "`description`, `topics`, and `tags`. Returns notebook objects with " +
+      "their `id` so you can chain into `select_notebook` etc.\n\n" +
+      "Use this when the user references a notebook by topic (\"the React " +
+      "one\") instead of by exact name. If multiple notebooks match, " +
+      "propose the top 1–2 and let the user choose.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Search query",
+          description: "Search keywords (case-insensitive).",
         },
       },
       required: ["query"],
     },
+    annotations: {
+      title: "Search notebooks",
+      readOnlyHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "get_library_stats",
-    description: "Get statistics about your notebook library (total notebooks, usage, etc.)",
+    description:
+      "Aggregate statistics about the local notebook library: " +
+      "`total_notebooks`, `active_notebook` (id), `most_used_notebook`, " +
+      "`total_queries`, `last_modified`. Useful as a quick health check or " +
+      "when the user asks \"what notebooks do I have?\".",
     inputSchema: {
       type: "object",
       properties: {},
+    },
+    annotations: {
+      title: "Get library statistics",
+      readOnlyHint: true,
+      openWorldHint: false,
     },
   },
 ];

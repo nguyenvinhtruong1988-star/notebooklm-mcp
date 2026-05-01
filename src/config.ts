@@ -18,7 +18,7 @@ import path from "path";
 // macOS: ~/Library/Application Support/notebooklm-mcp/
 // Windows: %APPDATA%\notebooklm-mcp\
 // IMPORTANT: Pass empty string suffix to disable envPaths' default '-nodejs' suffix!
-const paths = envPaths("notebooklm-mcp", {suffix: ""});
+const paths = envPaths("notebooklm-mcp", { suffix: "" });
 
 /**
  * Google NotebookLM Auth URL (used by setup_auth)
@@ -34,6 +34,13 @@ export interface Config {
   // Browser Settings
   headless: boolean;
   browserTimeout: number;
+  /**
+   * Hard ceiling on the wait for a NotebookLM answer (issue #14 + #27).
+   * Long-form queries on notebooks with many sources legitimately exceed
+   * 2 min. Overridable via `ANSWER_TIMEOUT_MS` env or per-call via
+   * `browser_options.timeout_ms`.
+   */
+  answerTimeoutMs: number;
   viewport: { width: number; height: number };
 
   // Session Management
@@ -88,7 +95,12 @@ const DEFAULTS: Config = {
   // Browser Settings
   headless: true,
   browserTimeout: 30000,
-  viewport: { width: 1024, height: 768 },
+  answerTimeoutMs: 600000, // 10 minutes — was hardcoded 120 s (issue #14)
+  // CRITICAL: NotebookLM switches to a tab-based mobile layout below
+  // ~1280px. The Studio panel is then offscreen on a non-active tab and
+  // selectors that rely on `isVisible()` falsely report "not started".
+  // Use a desktop-class viewport so the three-pane layout always renders.
+  viewport: { width: 1920, height: 1080 },
 
   // Session Management
   maxSessions: 10,
@@ -132,7 +144,6 @@ const DEFAULTS: Config = {
   instanceProfileMaxCount: 20,
 };
 
-
 /**
  * Parse boolean from string (for env vars)
  */
@@ -158,7 +169,22 @@ function parseInteger(value: string | undefined, defaultValue: number): number {
  */
 function parseArray(value: string | undefined, defaultValue: string[]): string[] {
   if (!value) return defaultValue;
-  return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Parse the multi-instance profile strategy from env, falling back to the
+ * default when the value is missing or unrecognised.
+ */
+function parseProfileStrategy(
+  value: string | undefined,
+  fallback: Config["profileStrategy"]
+): Config["profileStrategy"] {
+  if (value === "auto" || value === "single" || value === "isolated") return value;
+  return fallback;
 }
 
 /**
@@ -171,6 +197,7 @@ function applyEnvOverrides(config: Config): Config {
     notebookUrl: process.env.NOTEBOOK_URL || config.notebookUrl,
     headless: parseBoolean(process.env.HEADLESS, config.headless),
     browserTimeout: parseInteger(process.env.BROWSER_TIMEOUT, config.browserTimeout),
+    answerTimeoutMs: parseInteger(process.env.ANSWER_TIMEOUT_MS, config.answerTimeoutMs),
     maxSessions: parseInteger(process.env.MAX_SESSIONS, config.maxSessions),
     sessionTimeout: parseInteger(process.env.SESSION_TIMEOUT, config.sessionTimeout),
     autoLoginEnabled: parseBoolean(process.env.AUTO_LOGIN_ENABLED, config.autoLoginEnabled),
@@ -178,23 +205,50 @@ function applyEnvOverrides(config: Config): Config {
     loginPassword: process.env.LOGIN_PASSWORD || config.loginPassword,
     autoLoginTimeoutMs: parseInteger(process.env.AUTO_LOGIN_TIMEOUT_MS, config.autoLoginTimeoutMs),
     stealthEnabled: parseBoolean(process.env.STEALTH_ENABLED, config.stealthEnabled),
-    stealthRandomDelays: parseBoolean(process.env.STEALTH_RANDOM_DELAYS, config.stealthRandomDelays),
+    stealthRandomDelays: parseBoolean(
+      process.env.STEALTH_RANDOM_DELAYS,
+      config.stealthRandomDelays
+    ),
     stealthHumanTyping: parseBoolean(process.env.STEALTH_HUMAN_TYPING, config.stealthHumanTyping),
-    stealthMouseMovements: parseBoolean(process.env.STEALTH_MOUSE_MOVEMENTS, config.stealthMouseMovements),
+    stealthMouseMovements: parseBoolean(
+      process.env.STEALTH_MOUSE_MOVEMENTS,
+      config.stealthMouseMovements
+    ),
     typingWpmMin: parseInteger(process.env.TYPING_WPM_MIN, config.typingWpmMin),
     typingWpmMax: parseInteger(process.env.TYPING_WPM_MAX, config.typingWpmMax),
     minDelayMs: parseInteger(process.env.MIN_DELAY_MS, config.minDelayMs),
     maxDelayMs: parseInteger(process.env.MAX_DELAY_MS, config.maxDelayMs),
     notebookDescription: process.env.NOTEBOOK_DESCRIPTION || config.notebookDescription,
     notebookTopics: parseArray(process.env.NOTEBOOK_TOPICS, config.notebookTopics),
-    notebookContentTypes: parseArray(process.env.NOTEBOOK_CONTENT_TYPES, config.notebookContentTypes),
+    notebookContentTypes: parseArray(
+      process.env.NOTEBOOK_CONTENT_TYPES,
+      config.notebookContentTypes
+    ),
     notebookUseCases: parseArray(process.env.NOTEBOOK_USE_CASES, config.notebookUseCases),
-    profileStrategy: (process.env.NOTEBOOK_PROFILE_STRATEGY as any) || config.profileStrategy,
-    cloneProfileOnIsolated: parseBoolean(process.env.NOTEBOOK_CLONE_PROFILE, config.cloneProfileOnIsolated),
-    cleanupInstancesOnStartup: parseBoolean(process.env.NOTEBOOK_CLEANUP_ON_STARTUP, config.cleanupInstancesOnStartup),
-    cleanupInstancesOnShutdown: parseBoolean(process.env.NOTEBOOK_CLEANUP_ON_SHUTDOWN, config.cleanupInstancesOnShutdown),
-    instanceProfileTtlHours: parseInteger(process.env.NOTEBOOK_INSTANCE_TTL_HOURS, config.instanceProfileTtlHours),
-    instanceProfileMaxCount: parseInteger(process.env.NOTEBOOK_INSTANCE_MAX_COUNT, config.instanceProfileMaxCount),
+    profileStrategy: parseProfileStrategy(
+      process.env.NOTEBOOK_PROFILE_STRATEGY,
+      config.profileStrategy
+    ),
+    cloneProfileOnIsolated: parseBoolean(
+      process.env.NOTEBOOK_CLONE_PROFILE,
+      config.cloneProfileOnIsolated
+    ),
+    cleanupInstancesOnStartup: parseBoolean(
+      process.env.NOTEBOOK_CLEANUP_ON_STARTUP,
+      config.cleanupInstancesOnStartup
+    ),
+    cleanupInstancesOnShutdown: parseBoolean(
+      process.env.NOTEBOOK_CLEANUP_ON_SHUTDOWN,
+      config.cleanupInstancesOnShutdown
+    ),
+    instanceProfileTtlHours: parseInteger(
+      process.env.NOTEBOOK_INSTANCE_TTL_HOURS,
+      config.instanceProfileTtlHours
+    ),
+    instanceProfileMaxCount: parseInteger(
+      process.env.NOTEBOOK_INSTANCE_MAX_COUNT,
+      config.instanceProfileMaxCount
+    ),
   };
 }
 
@@ -231,7 +285,6 @@ export function ensureDirectories(): void {
   }
 }
 
-
 /**
  * Browser options that can be passed via tool parameters
  */
@@ -258,10 +311,7 @@ export interface BrowserOptions {
 /**
  * Apply browser options to CONFIG (returns modified copy, doesn't mutate global CONFIG)
  */
-export function applyBrowserOptions(
-  options?: BrowserOptions,
-  legacyShowBrowser?: boolean
-): Config {
+export function applyBrowserOptions(options?: BrowserOptions, legacyShowBrowser?: boolean): Config {
   const config = { ...CONFIG };
 
   // Handle legacy show_browser parameter

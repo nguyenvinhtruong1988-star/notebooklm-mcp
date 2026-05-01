@@ -1,11 +1,12 @@
 /**
  * CLI Handler
- * 
+ *
  * Handles CLI commands for configuration management.
  * Executed when the server is run with 'config' arguments.
  */
 
-import { SettingsManager, ProfileName } from "./settings-manager.js";
+import type { ProfileName } from "./settings-manager.js";
+import { SettingsManager } from "./settings-manager.js";
 
 export class CliHandler {
   private settingsManager: SettingsManager;
@@ -57,7 +58,10 @@ export class CliHandler {
       await this.settingsManager.saveSettings({ profile: value as ProfileName });
       console.log(`✅ Profile set to: ${value}`);
     } else if (key === "disabled-tools") {
-      const tools = value.split(",").map(t => t.trim()).filter(t => t.length > 0);
+      const tools = value
+        .split(",")
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0);
       await this.settingsManager.saveSettings({ disabledTools: tools });
       console.log(`✅ Disabled tools set to: ${tools.join(", ") || "(none)"}`);
     } else {
@@ -68,26 +72,28 @@ export class CliHandler {
   private handleGet(): void {
     const settings = this.settingsManager.getEffectiveSettings();
     const profiles = this.settingsManager.getProfiles();
-    
+
     console.log("🔧 Current Configuration:");
     console.log(`  Profile: ${settings.profile}`);
-    console.log(`  Disabled Tools: ${settings.disabledTools.length > 0 ? settings.disabledTools.join(", ") : "(none)"}`);
+    console.log(
+      `  Disabled Tools: ${settings.disabledTools.length > 0 ? settings.disabledTools.join(", ") : "(none)"}`
+    );
     console.log(`  Settings File: ${this.settingsManager.getSettingsPath()}`);
     console.log("");
     console.log("📋 Active Tools in this profile:");
-    
+
     const activeInProfile = profiles[settings.profile];
     if (activeInProfile.includes("*")) {
       console.log("  - All Tools (except disabled)");
     } else {
-      activeInProfile.forEach(t => console.log(`  - ${t}`));
+      activeInProfile.forEach((t) => console.log(`  - ${t}`));
     }
   }
 
   private async handleReset(): Promise<void> {
     await this.settingsManager.saveSettings({
       profile: "full",
-      disabledTools: []
+      disabledTools: [],
     });
     console.log("✅ Configuration reset to defaults (Profile: full, No disabled tools)");
   }

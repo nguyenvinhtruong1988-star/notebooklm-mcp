@@ -69,10 +69,7 @@ export function gaussian(mean: number, stdDev: number): number {
  * @param minMs Minimum delay in milliseconds (default: from CONFIG)
  * @param maxMs Maximum delay in milliseconds (default: from CONFIG)
  */
-export async function randomDelay(
-  minMs?: number,
-  maxMs?: number
-): Promise<void> {
+export async function randomDelay(minMs?: number, maxMs?: number): Promise<void> {
   minMs = minMs ?? CONFIG.minDelayMs;
   maxMs = maxMs ?? CONFIG.maxDelayMs;
 
@@ -330,7 +327,6 @@ export async function smoothScroll(
 
   if (!CONFIG.stealthEnabled || !CONFIG.stealthMouseMovements) {
     await page.evaluate((scrollAmount) => {
-      // @ts-expect-error - window exists in browser context
       window.scrollBy({ top: scrollAmount, behavior: "auto" });
     }, amount);
     return;
@@ -342,7 +338,6 @@ export async function smoothScroll(
 
   for (let i = 0; i < steps; i++) {
     await page.evaluate((step) => {
-      // @ts-expect-error - window exists in browser context
       window.scrollBy({ top: step, behavior: "smooth" });
     }, stepAmount);
     await sleep(randomFloat(20, 50));
@@ -395,10 +390,7 @@ export async function readingPause(textLength: number, wpm?: number): Promise<vo
  * @param page Playwright page instance
  * @param iterations Number of small movements (default: 3)
  */
-export async function randomMouseJitter(
-  page: Page,
-  iterations: number = 3
-): Promise<void> {
+export async function randomMouseJitter(page: Page, iterations: number = 3): Promise<void> {
   if (!CONFIG.stealthEnabled || !CONFIG.stealthMouseMovements) {
     return;
   }

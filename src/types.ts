@@ -30,12 +30,39 @@ export interface AskQuestionResult {
     message_count: number;
     last_activity: number;
   };
+  /**
+   * Provenance envelope (issue #42). Tells the host agent that `answer` is
+   * LLM-generated synthesis over user-uploaded (potentially attacker-
+   * influenceable) documents, not a deterministic retrieval result.
+   */
+  _provenance?: {
+    provider: "google-notebooklm";
+    model: "gemini-2.5";
+    via: "chrome-automation";
+    grounding: "user-uploaded-documents";
+    ai_generated: true;
+  };
+  /**
+   * Structured citations extracted from the answer (issue #20). Populated when
+   * the caller passes `source_format` other than `none`.
+   */
+  sources?: Array<{
+    marker: string;
+    number: number;
+    sourceName: string;
+    sourceText: string;
+  }>;
+  /**
+   * Effective `source_format` used to render `answer`. Mirrors what the caller
+   * requested (or the default `none`) so downstream tools can adapt.
+   */
+  source_format?: "none" | "inline" | "footnotes" | "json";
 }
 
 /**
  * Tool call result for MCP (generic wrapper for tool responses)
  */
-export interface ToolResult<T = any> {
+export interface ToolResult<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
@@ -50,7 +77,7 @@ export interface Tool {
   description: string;
   inputSchema: {
     type: "object";
-    properties: Record<string, any>;
+    properties: Record<string, unknown>;
     required?: string[];
   };
 }
@@ -82,12 +109,3 @@ export type ProgressCallback = (
   progress?: number,
   total?: number
 ) => Promise<void>;
-
-/**
- * Global state for the server
- */
-export interface ServerState {
-  playwright: any;
-  sessionManager: any;
-  authManager: any;
-}

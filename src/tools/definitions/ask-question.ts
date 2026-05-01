@@ -1,5 +1,6 @@
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
-import { NotebookLibrary } from "../../library/notebook-library.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { NotebookLibrary } from "../../library/notebook-library.js";
+import { getTopicsLine, getUseCaseBullets } from "../../library/metadata.js";
 
 /**
  * Build dynamic tool description for ask_question based on active notebook or library
@@ -9,8 +10,9 @@ export function buildAskQuestionDescription(library: NotebookLibrary): string {
   const bt = "`"; // Backtick helper to avoid template literal issues
 
   if (active) {
-    const topics = active.topics.join(", ");
-    const useCases = active.use_cases.map((uc) => `  - ${uc}`).join("\n");
+    // Safe accessors — older library.json files may omit topics/use_cases (issue #33).
+    const topics = getTopicsLine(active);
+    const useCases = getUseCaseBullets(active);
 
     return `# Conversational Research Partner (NotebookLM • Gemini 2.5 • Session RAG)
 
@@ -112,29 +114,50 @@ Tip: Tell the user you can manage NotebookLM library and ask which notebook to u
 export const askQuestionTool: Tool = {
   name: "ask_question",
   // Description will be set dynamically using buildAskQuestionDescription
-  description: "Dynamic description placeholder", 
+  description: "Dynamic description placeholder",
   inputSchema: {
     type: "object",
     properties: {
       question: {
         type: "string",
-        description: "The question to ask NotebookLM",
+        description:
+          "The question to ask NotebookLM. Plain natural language; can be " +
+          "multi-line. Gemini responds grounded on the notebook's sources.",
       },
       session_id: {
         type: "string",
         description:
-          "Optional session ID for contextual conversations. If omitted, a new session is created.",
+          "Reuse an existing browser session for follow-up questions. " +
+          "Pass back the `session_id` returned in a prior `ask_question` " +
+          "response — NotebookLM keeps the prior conversation in context, " +
+          "so follow-ups get sharper. Omit for a fresh session. " +
+          "`list_sessions` enumerates live sessions.",
       },
       notebook_id: {
         type: "string",
         description:
-          "Optional notebook ID from your library. If omitted, uses the active notebook. " +
-          "Use list_notebooks to see available notebooks.",
+          "Library notebook id (from `list_notebooks` / `search_notebooks`). " +
+          "Defaults to the active notebook (see `select_notebook`) when omitted.",
       },
       notebook_url: {
         type: "string",
         description:
-          "Optional notebook URL (overrides notebook_id). Use this for ad-hoc queries to notebooks not in your library.",
+          "Direct NotebookLM URL — overrides `notebook_id`. Use for ad-hoc " +
+          "queries against notebooks not yet in your library. Format: " +
+          "`https://notebooklm.google.com/notebook/<uuid>`.",
+      },
+      source_format: {
+        type: "string",
+        enum: ["none", "inline", "footnotes", "json"],
+        description:
+          "How citations are returned alongside the answer:\n" +
+          "  • `none` (default) — raw answer, no citation extraction (fastest)\n" +
+          "  • `footnotes` — answer plus a `Sources:` block, e.g. `[1] DocName — \"excerpt…\"`\n" +
+          "  • `inline` — `[N]` markers in the answer are replaced with `[N] (DocName: \"excerpt…\")`\n" +
+          "  • `json` — answer text untouched; structured `sources` array on the response\n\n" +
+          "Use `none` for snappy chat. Use `json` when downstream code needs to " +
+          "process citations programmatically. Use `footnotes`/`inline` when " +
+          "showing the answer to a human reader.",
       },
       show_browser: {
         type: "boolean",
@@ -216,5 +239,12 @@ export const askQuestionTool: Tool = {
       },
     },
     required: ["question"],
+  },
+  annotations: {
+    title: "Ask NotebookLM (Gemini 2.5)",
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: false,
+    openWorldHint: true,
   },
 };

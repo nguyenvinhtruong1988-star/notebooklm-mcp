@@ -1,154 +1,160 @@
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
+/**
+ * System / auth / cleanup tools. The cross-tool first-run workflow lives in
+ * the server-level `instructions` string (see src/index.ts) so individual
+ * descriptions stay focused on what each tool does, not how the suite
+ * fits together.
+ */
 export const systemTools: Tool[] = [
   {
     name: "get_health",
     description:
-      "Get server health status including authentication state, active sessions, and configuration. " +
-      "Use this to verify the server is ready before starting research workflows.\n\n" +
-      "If authenticated=false and having persistent issues:\n" +
-      "Consider running cleanup_data(preserve_library=true) + setup_auth for fresh start with clean browser session.",
+      "Inspect server state. Returns:\n" +
+      "  • `authenticated` — whether saved Google cookies are still valid\n" +
+      "  • `notebook_url`, `active_notebook_id`, `active_notebook_name` —\n" +
+      "    the currently selected library notebook (or null)\n" +
+      "  • `total_notebooks` — library size\n" +
+      "  • `active_sessions`, `max_sessions`, `session_timeout` — runtime\n" +
+      "    session stats (timeout in seconds; sessions auto-close after this)\n" +
+      "  • `headless`, `auto_login_enabled`, `stealth_enabled` — config\n" +
+      "Use this first thing in a new conversation. If `authenticated=false`, " +
+      "run `setup_auth` (or `re_auth` to switch accounts).",
     inputSchema: {
       type: "object",
       properties: {},
+    },
+    annotations: {
+      title: "Get server health",
+      readOnlyHint: true,
+      openWorldHint: false,
     },
   },
   {
     name: "setup_auth",
     description:
-      "Google authentication for NotebookLM access - opens a browser window for manual login to your Google account. " +
-      "Returns immediately after opening the browser. You have up to 10 minutes to complete the login. " +
-      "Use 'get_health' tool afterwards to verify authentication was saved successfully. " +
-      "Use this for first-time authentication or when auto-login credentials are not available. " +
-      "For switching accounts or rate-limit workarounds, use 're_auth' tool instead.\n\n" +
-      "TROUBLESHOOTING for persistent auth issues:\n" +
-      "If setup_auth fails or you encounter browser/session issues:\n" +
-      "1. Ask user to close ALL Chrome/Chromium instances\n" +
-      "2. Run cleanup_data(confirm=true, preserve_library=true) to clean old data\n" +
-      "3. Run setup_auth again for fresh start\n" +
-      "This helps resolve conflicts from old browser sessions and installation data.",
+      "Open a browser window for first-time Google login. Returns immediately " +
+      "after spawning the browser; the user has up to 10 minutes to complete " +
+      "sign-in, then cookies are persisted for future runs.\n\n" +
+      "When to use:\n" +
+      "  • `get_health` reports `authenticated=false` for the first time\n" +
+      "  • Auto-login credentials are not configured\n" +
+      "  • `re_auth` is the right call when you want to *switch* accounts " +
+      "or recover from a daily-quota lockout\n\n" +
+      "After login finishes, call `get_health` to verify success.\n\n" +
+      "If the browser session feels broken (auth keeps failing, stale cookies), " +
+      "run `cleanup_data(confirm=true, preserve_library=true)` first, then " +
+      "retry `setup_auth`.",
     inputSchema: {
       type: "object",
       properties: {
         show_browser: {
           type: "boolean",
           description:
-            "Show browser window (simple version). Default: true for setup. " +
-            "For advanced control, use browser_options instead.",
+            "Show the browser window. Default: true (must be visible so the " +
+            "user can interact). For advanced control use `browser_options`.",
         },
         browser_options: {
           type: "object",
           description:
-            "Optional browser settings. Control visibility, timeouts, and stealth behavior.",
+            "Advanced browser settings. Override visibility, timeout, or " +
+            "headless mode (default: visible, 30 s).",
           properties: {
-            show: {
-              type: "boolean",
-              description: "Show browser window (default: true for setup)",
-            },
-            headless: {
-              type: "boolean",
-              description: "Run browser in headless mode (default: false for setup)",
-            },
-            timeout_ms: {
-              type: "number",
-              description: "Browser operation timeout in milliseconds (default: 30000)",
-            },
+            show: { type: "boolean" },
+            headless: { type: "boolean" },
+            timeout_ms: { type: "number" },
           },
         },
       },
+    },
+    annotations: {
+      title: "Set up Google authentication",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
     },
   },
   {
     name: "re_auth",
     description:
-      "Switch to a different Google account or re-authenticate. " +
-      "Use this when:\n" +
-      "- NotebookLM rate limit is reached (50 queries/day for free accounts)\n" +
-      "- You want to switch to a different Google account\n" +
-      "- Authentication is broken and needs a fresh start\n\n" +
-      "This will:\n" +
-      "1. Close all active browser sessions\n" +
-      "2. Delete all saved authentication data (cookies, Chrome profile)\n" +
-      "3. Open browser for fresh Google login\n\n" +
-      "After completion, use 'get_health' to verify authentication.\n\n" +
-      "TROUBLESHOOTING for persistent auth issues:\n" +
-      "If re_auth fails repeatedly:\n" +
-      "1. Ask user to close ALL Chrome/Chromium instances\n" +
-      "2. Run cleanup_data(confirm=false, preserve_library=true) to preview old files\n" +
-      "3. Run cleanup_data(confirm=true, preserve_library=true) to clean everything except library\n" +
-      "4. Run re_auth again for completely fresh start\n" +
-      "This removes old installation data and browser sessions that can cause conflicts.",
+      "Switch to a different Google account or recover from broken auth. " +
+      "Closes all active sessions, deletes saved cookies and Chrome profile, " +
+      "and opens a fresh login browser.\n\n" +
+      "Common triggers:\n" +
+      "  • NotebookLM's 50 queries/day free-tier limit is reached and the " +
+      "user wants to rotate to another Google account\n" +
+      "  • `setup_auth` failed and a clean slate is needed\n\n" +
+      "After login, call `get_health` to verify. For very stuck states, run " +
+      "`cleanup_data(confirm=true, preserve_library=true)` before `re_auth`.",
     inputSchema: {
       type: "object",
       properties: {
         show_browser: {
           type: "boolean",
-          description:
-            "Show browser window (simple version). Default: true for re-auth. " +
-            "For advanced control, use browser_options instead.",
+          description: "Show the browser window. Default: true.",
         },
         browser_options: {
           type: "object",
-          description:
-            "Optional browser settings. Control visibility, timeouts, and stealth behavior.",
           properties: {
-            show: {
-              type: "boolean",
-              description: "Show browser window (default: true for re-auth)",
-            },
-            headless: {
-              type: "boolean",
-              description: "Run browser in headless mode (default: false for re-auth)",
-            },
-            timeout_ms: {
-              type: "number",
-              description: "Browser operation timeout in milliseconds (default: 30000)",
-            },
+            show: { type: "boolean" },
+            headless: { type: "boolean" },
+            timeout_ms: { type: "number" },
           },
         },
       },
+    },
+    annotations: {
+      title: "Re-authenticate",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: true,
     },
   },
   {
     name: "cleanup_data",
     description:
-      "ULTRATHINK Deep Cleanup - Scans entire system for ALL NotebookLM MCP data files across 8 categories. Always runs in deep mode, shows categorized preview before deletion.\n\n" +
-      "⚠️ CRITICAL: Close ALL Chrome/Chromium instances BEFORE running this tool! Open browsers can prevent cleanup and cause issues.\n\n" +
-      "Categories scanned:\n" +
-      "1. Legacy Installation (notebooklm-mcp-nodejs) - Old paths with -nodejs suffix\n" +
-      "2. Current Installation (notebooklm-mcp) - Active data, browser profiles, library\n" +
-      "3. NPM/NPX Cache - Cached installations from npx\n" +
-      "4. Claude CLI MCP Logs - MCP server logs from Claude CLI\n" +
-      "5. Temporary Backups - Backup directories in system temp\n" +
-      "6. Claude Projects Cache - Project-specific cache (optional)\n" +
-      "7. Editor Logs (Cursor/VSCode) - MCP logs from code editors (optional)\n" +
-      "8. Trash Files - Deleted notebooklm files in system trash (optional)\n\n" +
-      "Works cross-platform (Linux, Windows, macOS). Safe by design: shows detailed preview before deletion, requires explicit confirmation.\n\n" +
-      "LIBRARY PRESERVATION: Set preserve_library=true to keep your notebook library.json file while cleaning everything else.\n\n" +
-      "RECOMMENDED WORKFLOW for fresh start:\n" +
-      "1. Ask user to close ALL Chrome/Chromium instances\n" +
-      "2. Run cleanup_data(confirm=false, preserve_library=true) to preview\n" +
-      "3. Run cleanup_data(confirm=true, preserve_library=true) to execute\n" +
-      "4. Run setup_auth or re_auth for fresh browser session\n\n" +
-      "Use cases: Clean reinstall, troubleshooting auth issues, removing all traces before uninstall, cleaning old browser sessions and installation data.",
+      "Two-phase deep cleanup of all server data on disk (auth state, " +
+      "browser profiles, caches, MCP logs, temp backups). Cross-platform " +
+      "(Linux/macOS/Windows). Always close all Chrome/Chromium instances " +
+      "first — open browsers can lock files.\n\n" +
+      "Phase 1 (preview): call with `confirm: false`. Returns a categorised " +
+      "list of paths and total size. **No deletion happens.**\n" +
+      "Phase 2 (delete): after the user reviews the preview and approves, " +
+      "call with `confirm: true`.\n\n" +
+      "Set `preserve_library: true` to keep the notebook library file " +
+      "(library.json) while wiping everything else — recommended when " +
+      "troubleshooting auth.\n\n" +
+      "Typical recovery flow:\n" +
+      "  1. cleanup_data(confirm=false, preserve_library=true)  // preview\n" +
+      "  2. cleanup_data(confirm=true, preserve_library=true)   // execute\n" +
+      "  3. setup_auth (or re_auth)",
     inputSchema: {
       type: "object",
       properties: {
         confirm: {
           type: "boolean",
           description:
-            "Confirmation flag. Tool shows preview first, then user confirms deletion. " +
-            "Set to true only after user has reviewed the preview and explicitly confirmed.",
+            "false = preview only (default). true = actually delete after " +
+            "user reviewed the preview.",
         },
         preserve_library: {
           type: "boolean",
           description:
-            "Preserve library.json file during cleanup. Default: false. " +
-            "Set to true to keep your notebook library while deleting everything else (browser data, caches, logs).",
+            "Keep notebook library.json while deleting everything else. " +
+            "Default: false. Set true when only auth/browser state is broken.",
           default: false,
         },
       },
       required: ["confirm"],
+    },
+    annotations: {
+      title: "Cleanup all data",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
 ];

@@ -62,9 +62,9 @@ export class CleanupManager {
     // IMPORTANT: envPaths() has a default suffix 'nodejs', so we must explicitly disable it!
 
     // Legacy paths with -nodejs suffix (using default suffix behavior)
-    this.legacyPaths = envPaths("notebooklm-mcp");  // This becomes notebooklm-mcp-nodejs by default
+    this.legacyPaths = envPaths("notebooklm-mcp"); // This becomes notebooklm-mcp-nodejs by default
     // Current paths without suffix (disable the default suffix with empty string)
-    this.currentPaths = envPaths("notebooklm-mcp", {suffix: ""});
+    this.currentPaths = envPaths("notebooklm-mcp", { suffix: "" });
     // Platform-agnostic paths
     this.homeDir = os.homedir();
     this.tempDir = os.tmpdir();
@@ -124,10 +124,7 @@ export class CleanupManager {
 
     if (platform === "win32") {
       const appData = process.env.APPDATA || path.join(this.homeDir, "AppData", "Roaming");
-      paths.push(
-        path.join(appData, "Cursor", "logs"),
-        path.join(appData, "Code", "logs")
-      );
+      paths.push(path.join(appData, "Cursor", "logs"), path.join(appData, "Code", "logs"));
     } else if (platform === "darwin") {
       paths.push(
         path.join(this.homeDir, "Library", "Application Support", "Cursor", "logs"),
@@ -347,9 +344,7 @@ export class CleanupManager {
       }
 
       // Search for notebooklm files in trash
-      const patterns = [
-        path.join(trashPath, "**/*notebooklm*"),
-      ];
+      const patterns = [path.join(trashPath, "**/*notebooklm*")];
 
       for (const pattern of patterns) {
         const matches = await globby(pattern, { absolute: true });
@@ -408,7 +403,7 @@ export class CleanupManager {
       // and any paths that envPaths might miss
       const manualLegacyPaths = this.getManualLegacyPaths();
       for (const dir of manualLegacyPaths) {
-        if (await this.pathExists(dir) && !allPaths.has(dir)) {
+        if ((await this.pathExists(dir)) && !allPaths.has(dir)) {
           const size = await this.getDirectorySize(dir);
           legacyPaths.push(dir);
           legacyBytes += size;
@@ -461,7 +456,7 @@ export class CleanupManager {
           ];
 
       for (const dir of currentDirs) {
-        if (await this.pathExists(dir) && !allPaths.has(dir)) {
+        if ((await this.pathExists(dir)) && !allPaths.has(dir)) {
           const size = await this.getDirectorySize(dir);
           currentPaths.push(dir);
           currentBytes += size;
@@ -661,7 +656,9 @@ export class CleanupManager {
 
     // Delete by category
     for (const category of categories) {
-      log.info(`\n📦 ${category.name} (${category.paths.length} items, ${this.formatBytes(category.totalBytes)})`);
+      log.info(
+        `\n📦 ${category.name} (${category.paths.length} items, ${this.formatBytes(category.totalBytes)})`
+      );
 
       if (category.optional) {
         log.warning(`  ⚠️  Optional category - ${category.description}`);
@@ -696,7 +693,9 @@ export class CleanupManager {
     const success = failedPaths.length === 0;
 
     if (success) {
-      log.success(`\n✅ Cleanup complete! Deleted ${deletedPaths.length} items (${this.formatBytes(totalSizeBytes)})`);
+      log.success(
+        `\n✅ Cleanup complete! Deleted ${deletedPaths.length} items (${this.formatBytes(totalSizeBytes)})`
+      );
     } else {
       log.warning(`\n⚠️  Cleanup completed with ${failedPaths.length} errors`);
       log.success(`  Deleted: ${deletedPaths.length} items`);

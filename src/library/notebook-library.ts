@@ -63,7 +63,8 @@ export class NotebookLibrary {
     const hasConfig =
       CONFIG.notebookUrl &&
       CONFIG.notebookDescription &&
-      CONFIG.notebookDescription !== "General knowledge base - configure NOTEBOOK_DESCRIPTION to help Claude understand what's in this notebook";
+      CONFIG.notebookDescription !==
+        "General knowledge base - configure NOTEBOOK_DESCRIPTION to help Claude understand what's in this notebook";
 
     const notebooks: NotebookEntry[] = [];
 
@@ -272,8 +273,7 @@ export class NotebookLibrary {
 
     // If we removed the active notebook, select another one
     if (updated.active_notebook_id === id) {
-      updated.active_notebook_id =
-        updated.notebooks.length > 0 ? updated.notebooks[0].id : null;
+      updated.active_notebook_id = updated.notebooks.length > 0 ? updated.notebooks[0].id : null;
     }
 
     this.saveLibrary(updated);
@@ -309,14 +309,12 @@ export class NotebookLibrary {
    * Get library statistics
    */
   getStats(): LibraryStats {
-    const totalQueries = this.library.notebooks.reduce(
-      (sum, n) => sum + n.use_count,
-      0
-    );
+    const totalQueries = this.library.notebooks.reduce((sum, n) => sum + n.use_count, 0);
 
-    const mostUsed = this.library.notebooks.reduce((max, n) =>
-      n.use_count > (max?.use_count || 0) ? n : max
-    , null as NotebookEntry | null);
+    const mostUsed = this.library.notebooks.reduce(
+      (max, n) => (n.use_count > (max?.use_count || 0) ? n : max),
+      null as NotebookEntry | null
+    );
 
     return {
       total_notebooks: this.library.notebooks.length,

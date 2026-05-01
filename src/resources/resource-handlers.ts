@@ -5,7 +5,7 @@ import {
   CompleteRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { NotebookLibrary } from "../library/notebook-library.js";
+import type { NotebookLibrary } from "../library/notebook-library.js";
 import { log } from "../utils/logger.js";
 
 /**
@@ -27,7 +27,13 @@ export class ResourceHandlers {
       log.info("📚 [MCP] list_resources request received");
 
       const notebooks = this.library.listNotebooks();
-      const resources: any[] = [
+      type ResourceDescriptor = {
+        uri: string;
+        name: string;
+        description: string;
+        mimeType: string;
+      };
+      const resources: ResourceDescriptor[] = [
         {
           uri: "notebooklm://library",
           name: "Notebook Library",
@@ -140,9 +146,7 @@ export class ResourceHandlers {
         const prefix = "notebooklm://library/";
         const encodedId = uri.slice(prefix.length);
         if (!encodedId) {
-          throw new Error(
-            "Notebook resource requires an ID (e.g. notebooklm://library/{id})"
-          );
+          throw new Error("Notebook resource requires an ID (e.g. notebooklm://library/{id})");
         }
 
         let id: string;
@@ -180,9 +184,7 @@ export class ResourceHandlers {
         const active = this.library.getActiveNotebook();
 
         if (!active) {
-          throw new Error(
-            "No active notebook. Use notebooklm://library to see all notebooks."
-          );
+          throw new Error("No active notebook. Use notebooklm://library to see all notebooks.");
         }
 
         const metadata = {
@@ -208,26 +210,32 @@ export class ResourceHandlers {
         };
       }
 
-      throw new Error(`Unknown resource: ${uri}`);
+      // Helpful error so misconfigured clients (issue #15 — reporter requested
+      // `mcp://notebooklm`, which never existed) learn the supported URI scheme.
+      throw new Error(
+        `Unknown resource: ${uri}. Supported URIs: notebooklm://library, ` +
+          "notebooklm://library/{id}, notebooklm://metadata. " +
+          "Call resources/list to discover the active set."
+      );
     });
 
     // Argument completions (for prompt arguments and resource templates)
     server.setRequestHandler(CompleteRequestSchema, async (request) => {
-      const { ref, argument } = request.params as any;
+      const { ref, argument } = request.params;
       try {
-        if (ref?.type === "ref/resource") {
-          // Complete variables for resource templates
-          const uri = String(ref.uri || "");
-          // Notebook by ID template
-          if (uri === "notebooklm://library/{id}" && argument?.name === "id") {
-            const values = this.completeNotebookIds(argument?.value);
-            return this.buildCompletion(values) as any;
+        if (ref.type === "ref/resource") {
+          // The MCP SDK types `ref` as a discriminated union; the resource
+          // template branch carries `uri`. Narrow then resolve.
+          const uri = ref.uri;
+          if (uri === "notebooklm://library/{id}" && argument.name === "id") {
+            const values = this.completeNotebookIds(argument.value);
+            return this.buildCompletion(values);
           }
         }
       } catch (e) {
         log.warning(`⚠️  [MCP] completion error: ${e}`);
       }
-      return { completion: { values: [], total: 0 } } as any;
+      return { completion: { values: [], total: 0 } };
     });
   }
 

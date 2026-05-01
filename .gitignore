@@ -43,3 +43,8 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Playwright debug artefacts and local test scratch
+.playwright-mcp/
+tmp/
+studio-*.png

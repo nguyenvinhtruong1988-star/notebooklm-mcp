@@ -14,13 +14,29 @@
  */
 
 import type { BrowserContext, Page } from "patchright";
-import { SharedContextManager } from "./shared-context-manager.js";
-import { AuthManager } from "../auth/auth-manager.js";
+import type { SharedContextManager } from "./shared-context-manager.js";
+import type { AuthManager } from "../auth/auth-manager.js";
 import { humanType, randomDelay } from "../utils/stealth-utils.js";
+import { snapshotAllResponses } from "../utils/page-utils.js";
+import { waitForStableAnswer, snapshotPriorAnswers } from "../notebooklm/chat.js";
 import {
-  waitForLatestAnswer,
-  snapshotAllResponses,
-} from "../utils/page-utils.js";
+  extractCitations as extractCitationsFromPage,
+  type SourceFormat,
+  type ExtractCitationsResult,
+} from "../notebooklm/citations.js";
+import {
+  addSource as addSourceToPage,
+  type AddSourceInput,
+  type AddSourceResult,
+} from "../notebooklm/sources.js";
+import {
+  generateAudioOverview as generateAudioOnPage,
+  downloadAudioOverview as downloadAudioOnPage,
+  getAudioStatusOnPage,
+  type GenerateAudioOptions,
+  type AudioGenerationResult,
+  type DownloadAudioResult,
+} from "../notebooklm/audio.js";
 import { CONFIG } from "../config.js";
 import { log } from "../utils/logger.js";
 import type { SessionInfo, ProgressCallback } from "../types.js";
@@ -74,9 +90,11 @@ export class BrowserSession {
       // Create new page (tab) in the shared context (with auto-recovery)
       try {
         this.page = await this.context.newPage();
-      } catch (e: any) {
-        const msg = String(e?.message || e);
-        if (/has been closed|Target .* closed|Browser has been closed|Context .* closed/i.test(msg)) {
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (
+          /has been closed|Target .* closed|Browser has been closed|Context .* closed/i.test(msg)
+        ) {
           log.warning("  ♻️  Context was closed. Recreating and retrying newPage...");
           this.context = await this.sharedContextManager.getOrCreateContext();
           this.page = await this.context.newPage();
@@ -97,9 +115,7 @@ export class BrowserSession {
       await randomDelay(2000, 3000);
 
       // Check if we need to login
-      const isAuthenticated = await this.authManager.validateCookiesExpiry(
-        this.context
-      );
+      const isAuthenticated = await this.authManager.validateCookiesExpiry(this.context);
 
       if (!isAuthenticated) {
         log.warning(`  🔑 Session ${this.sessionId} needs authentication`);
@@ -179,7 +195,8 @@ export class BrowserSession {
         log.error(`  ❌ NotebookLM interface not ready: ${error}`);
         throw new Error(
           "Could not find NotebookLM chat input. " +
-          "Please ensure the notebook page has loaded correctly."
+            "Please ensure the notebook page has loaded correctly.",
+          { cause: error }
         );
       }
     }
@@ -187,12 +204,9 @@ export class BrowserSession {
 
   private isPageClosedSafe(): boolean {
     if (!this.page) return true;
-    const p: any = this.page as any;
     try {
-      if (typeof p.isClosed === 'function') {
-        if (p.isClosed()) return true;
-      }
-      // Accessing URL should be safe; if page is gone, this may throw
+      if (this.page.isClosed()) return true;
+      // Accessing URL should be safe; if page is gone, this may throw.
       void this.page.url();
       return false;
     } catch {
@@ -234,9 +248,7 @@ export class BrowserSession {
       await randomDelay(2000, 3000);
 
       // Check if it worked
-      const nowValid = await this.authManager.validateCookiesExpiry(
-        this.context
-      );
+      const nowValid = await this.authManager.validateCookiesExpiry(this.context);
       if (nowValid) {
         log.success(`  ✅ Auth state loaded successfully`);
         return true;
@@ -268,9 +280,7 @@ export class BrowserSession {
         return false;
       }
     } else {
-      log.error(
-        `  ❌ Auto-login disabled and no valid auth state - manual login required`
-      );
+      log.error(`  ❌ Auto-login disabled and no valid auth state - manual login required`);
       return false;
     }
   }
@@ -316,7 +326,6 @@ export class BrowserSession {
       try {
         await this.page.evaluate((data) => {
           for (const [key, value] of Object.entries(data)) {
-            // @ts-expect-error - sessionStorage exists in browser context
             sessionStorage.setItem(key, value);
           }
         }, sessionData);
@@ -372,9 +381,14 @@ export class BrowserSession {
         }
       }
 
-      // Snapshot existing responses BEFORE asking
+      // Snapshot existing responses BEFORE asking — uses the v2 chat module
+      // (issue #43). Falls back to the legacy snapshot only if the v2 helper
+      // produced nothing, so we don't regress when the new selectors miss.
       log.info(`  📸 Snapshotting existing responses...`);
-      const existingResponses = await snapshotAllResponses(page);
+      let existingResponses = await snapshotPriorAnswers(page);
+      if (existingResponses.length === 0) {
+        existingResponses = await snapshotAllResponses(page);
+      }
       log.success(`  ✅ Captured ${existingResponses.length} existing responses`);
 
       // Find the chat input
@@ -382,7 +396,7 @@ export class BrowserSession {
       if (!inputSelector) {
         throw new Error(
           "Could not find visible chat input element. " +
-          "Please check if the notebook page has loaded correctly."
+            "Please check if the notebook page has loaded correctly."
         );
       }
 
@@ -404,15 +418,16 @@ export class BrowserSession {
       // Small pause after submit
       await randomDelay(1000, 1500);
 
-      // Wait for the response with streaming detection
-      log.info(`  ⏳ Waiting for response (with streaming detection)...`);
-      await sendProgress?.("Waiting for NotebookLM response (streaming detection active)...", 3, 5);
-      const answer = await waitForLatestAnswer(page, {
+      // Wait for the response with streaming-stability detection (issue #43).
+      // Timeout comes from CONFIG.answerTimeoutMs so users can tune it via
+      // ANSWER_TIMEOUT_MS or browser_options.timeout_ms (issue #14, #27).
+      log.info(`  ⏳ Waiting for response (streaming-stability)...`);
+      await sendProgress?.("Waiting for NotebookLM response (streaming-stability)...", 3, 5);
+      const answer = await waitForStableAnswer(page, {
         question,
-        timeoutMs: 120000, // 2 minutes
-        pollIntervalMs: 1000,
+        timeoutMs: CONFIG.answerTimeoutMs,
+        pollIntervalMs: 750,
         ignoreTexts: existingResponses,
-        debug: false,
       });
 
       if (!answer) {
@@ -440,13 +455,19 @@ export class BrowserSession {
 
     try {
       return await askOnce();
-    } catch (error: any) {
-      const msg = String(error?.message || error);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
       if (/has been closed|Target .* closed|Browser has been closed|Context .* closed/i.test(msg)) {
         log.warning(`  ♻️  Detected closed page/context. Recovering session and retrying ask...`);
         try {
           this.initialized = false;
-          if (this.page) { try { await this.page.close(); } catch {} }
+          if (this.page) {
+            try {
+              await this.page.close();
+            } catch {
+              /* page already gone */
+            }
+          }
           this.page = null;
           await this.init();
           return await askOnce();
@@ -457,6 +478,65 @@ export class BrowserSession {
       }
       log.error(`❌ [${this.sessionId}] Failed to ask question: ${msg}`);
       throw error;
+    }
+  }
+
+  /**
+   * Add a new source (URL or pasted text) to the active notebook page
+   * (issue #25). Lazily initialises the session so the caller can use this
+   * without first running `ask()`.
+   */
+  async addSource(input: AddSourceInput): Promise<AddSourceResult> {
+    if (!this.initialized || !this.page || this.isPageClosedSafe()) {
+      await this.init();
+    }
+    return await addSourceToPage(this.page!, input);
+  }
+
+  /**
+   * Generate an Audio Overview for the active notebook (issue #11).
+   */
+  async generateAudio(options: GenerateAudioOptions = {}): Promise<AudioGenerationResult> {
+    if (!this.initialized || !this.page || this.isPageClosedSafe()) {
+      await this.init();
+    }
+    return await generateAudioOnPage(this.page!, options);
+  }
+
+  /**
+   * Non-blocking probe for the current Audio Overview state (issue #11).
+   */
+  async getAudioStatus(): Promise<AudioGenerationResult> {
+    if (!this.initialized || !this.page || this.isPageClosedSafe()) {
+      await this.init();
+    }
+    return await getAudioStatusOnPage(this.page!);
+  }
+
+  /**
+   * Download the most recent Audio Overview (issue #11).
+   */
+  async downloadAudio(destinationDir: string): Promise<DownloadAudioResult> {
+    if (!this.initialized || !this.page || this.isPageClosedSafe()) {
+      await this.init();
+    }
+    return await downloadAudioOnPage(this.page!, destinationDir);
+  }
+
+  /**
+   * Pull DOM-level citations from the most recent answer on this session's
+   * page (issue #20). Must be called immediately after `ask()` — before any
+   * follow-up question disturbs the source panel.
+   */
+  async extractCitations(answer: string, format: SourceFormat): Promise<ExtractCitationsResult> {
+    if (format === "none" || !this.page || this.isPageClosedSafe()) {
+      return { citations: [], formattedAnswer: answer };
+    }
+    try {
+      return await extractCitationsFromPage(this.page, answer, format);
+    } catch (err) {
+      log.warning(`  ⚠️  Citation extraction failed: ${err}`);
+      return { citations: [], formattedAnswer: answer };
     }
   }
 
@@ -474,29 +554,87 @@ export class BrowserSession {
       return null;
     }
 
-    // Use EXACT Python selectors (in order of preference)
     const selectors = [
-      "textarea.query-box-input", // ← PRIMARY Python selector
-      'textarea[aria-label="Feld für Anfragen"]', // ← Python fallback
+      // Stable class — language-agnostic.
+      "textarea.query-box-input",
+      // Locale-bound aria-label fallbacks for older builds.
+      'textarea[aria-label="Feld für Anfragen"]',
+      'textarea[aria-label*="anfrag" i]',
+      'textarea[aria-label*="query" i]',
+      'textarea[aria-label*="zone de requete" i]',
+      'textarea[aria-label*="requete" i]',
+      'textarea[aria-label*="consulta" i]',
+      'textarea[aria-label*="domanda" i]',
     ];
 
-    for (const selector of selectors) {
-      try {
-        const element = await this.page.$(selector);
-        if (element) {
-          const isVisible = await element.isVisible();
-          if (isVisible) {
-            // NO disabled check! Just like Python!
-            log.success(`  ✅ Found chat input: ${selector}`);
+    const tryFind = async (): Promise<string | null> => {
+      for (const selector of selectors) {
+        try {
+          const element = await this.page!.$(selector);
+          if (element && (await element.isVisible())) {
             return selector;
           }
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
       }
+      return null;
+    };
+
+    let hit = await tryFind();
+    if (hit) {
+      log.success(`  ✅ Found chat input: ${hit}`);
+      return hit;
     }
 
-    log.error(`  ❌ Could not find visible chat input`);
+    // Recovery: chat input is most often hidden because (a) a leftover Add-
+    // source / customise modal is still mounted, (b) a citation source-panel
+    // is open, or (c) we navigated to `?addSource=true` and never cleaned the
+    // URL up. Try all three remedies and re-probe.
+    log.warning("  ⚠️  Chat input not visible, attempting recovery…");
+    try {
+      await this.page.keyboard.press("Escape").catch(() => undefined);
+      await this.page.keyboard.press("Escape").catch(() => undefined);
+      await randomDelay(200, 400);
+      hit = await tryFind();
+      if (hit) {
+        log.success(`  ✅ Found chat input after Escape: ${hit}`);
+        return hit;
+      }
+
+      const url = this.page.url();
+      if (url.includes("addSource=true") || url.includes("?")) {
+        const cleanUrl = url.replace(/[?&]addSource=true/g, "").replace(/&$/, "");
+        if (cleanUrl !== url) {
+          log.info(`  ↻ Cleaning URL state: ${url} → ${cleanUrl}`);
+          await this.page
+            .goto(cleanUrl, { waitUntil: "domcontentloaded", timeout: 15_000 })
+            .catch(() => undefined);
+          await randomDelay(800, 1200);
+          hit = await tryFind();
+          if (hit) {
+            log.success(`  ✅ Found chat input after URL clean: ${hit}`);
+            return hit;
+          }
+        }
+      }
+
+      // Last resort: reload the notebook page entirely.
+      log.warning("  ⚠️  Reloading notebook page as last resort…");
+      await this.page
+        .goto(this.notebookUrl, { waitUntil: "domcontentloaded", timeout: 20_000 })
+        .catch(() => undefined);
+      await randomDelay(1500, 2500);
+      hit = await tryFind();
+      if (hit) {
+        log.success(`  ✅ Found chat input after reload: ${hit}`);
+        return hit;
+      }
+    } catch (err) {
+      log.warning(`  ⚠️  Recovery failed: ${err}`);
+    }
+
+    log.error("  ❌ Could not find visible chat input");
     return null;
   }
 
@@ -566,8 +704,10 @@ export class BrowserSession {
       const inputSelector = "textarea.query-box-input";
       const input = await this.page.$(inputSelector);
       if (input) {
-        const isDisabled = await input.evaluate((el: any) => {
-          return el.disabled || el.hasAttribute("disabled");
+        const isDisabled = await input.evaluate((el) => {
+          return (
+            (el as HTMLTextAreaElement).disabled || (el as HTMLElement).hasAttribute("disabled")
+          );
         });
 
         if (isDisabled) {
@@ -620,12 +760,18 @@ export class BrowserSession {
 
     try {
       await resetOnce();
-    } catch (error: any) {
-      const msg = String(error?.message || error);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
       if (/has been closed|Target .* closed|Browser has been closed|Context .* closed/i.test(msg)) {
         log.warning(`  ♻️  Detected closed page/context during reset. Recovering and retrying...`);
         this.initialized = false;
-        if (this.page) { try { await this.page.close(); } catch {} }
+        if (this.page) {
+          try {
+            await this.page.close();
+          } catch {
+            /* page already gone */
+          }
+        }
         this.page = null;
         await this.init();
         await resetOnce();

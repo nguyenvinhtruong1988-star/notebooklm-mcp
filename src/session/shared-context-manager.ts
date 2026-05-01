@@ -16,7 +16,12 @@ import type { BrowserContext } from "patchright";
 import { chromium } from "patchright";
 import { CONFIG } from "../config.js";
 import { log } from "../utils/logger.js";
-import { AuthManager } from "../auth/auth-manager.js";
+import type { AuthManager } from "../auth/auth-manager.js";
+import {
+  getPreferredChannel,
+  isChannelFailure,
+  withChannel,
+} from "../browser/chromium-fallback.js";
 import fs from "fs";
 import path from "path";
 
@@ -95,7 +100,7 @@ export class SharedContextManager {
       await this.globalContext.cookies();
       log.dim("  ✅ Context still valid (browser open)");
       return false;
-    } catch (error) {
+    } catch {
       log.warning("  ⚠️  Context appears closed - will recreate");
       this.globalContext = null;
       this.contextCreatedAt = null;
@@ -147,14 +152,13 @@ export class SharedContextManager {
     const shouldBeHeadless = overrideHeadless !== undefined ? !overrideHeadless : CONFIG.headless;
 
     if (overrideHeadless !== undefined) {
-      log.info(`  Browser visibility override: ${overrideHeadless ? 'VISIBLE' : 'HEADLESS'}`);
+      log.info(`  Browser visibility override: ${overrideHeadless ? "VISIBLE" : "HEADLESS"}`);
     }
 
     // Build launch options for persistent context
     // NOTE: userDataDir is passed as first parameter, NOT in options!
-    const launchOptions = {
+    const baseLaunchOptions = {
       headless: shouldBeHeadless,
-      channel: "chrome" as const,
       viewport: CONFIG.viewport,
       locale: "en-US",
       timezoneId: "Europe/Berlin",
@@ -174,16 +178,36 @@ export class SharedContextManager {
     };
 
     // 🔥 CRITICAL: launchPersistentContext creates/loads Chrome profile
-    // Strategy handling for concurrent instances
+    // Strategy handling for concurrent instances + channel fallback
+    // (issue #13 macOS Tahoe Chrome crash, issue #19 Windows exit code 21).
+    // We start with the user-preferred channel (default `chrome`) and, on a
+    // recognised channel-failure, retry with bundled `chromium`.
     const baseProfile = CONFIG.chromeProfileDir;
     const strategy = CONFIG.profileStrategy;
+    const preferred = getPreferredChannel();
     const tryLaunch = async (userDataDir: string) => {
       log.info("  🚀 Launching persistent Chrome context...");
       log.dim(`  📍 Profile location: ${userDataDir}`);
       if (statePath) {
         log.info(`  📄 Loading auth state: ${statePath}`);
       }
-      return chromium.launchPersistentContext(userDataDir, launchOptions);
+      try {
+        return await chromium.launchPersistentContext(
+          userDataDir,
+          withChannel(baseLaunchOptions, preferred)
+        );
+      } catch (err) {
+        if (preferred === "chrome" && isChannelFailure(err)) {
+          log.warning(
+            "⚠️  System Chrome failed to launch — falling back to bundled Chromium (set BROWSER_CHANNEL=chromium to skip this retry)."
+          );
+          return await chromium.launchPersistentContext(
+            userDataDir,
+            withChannel(baseLaunchOptions, "chromium")
+          );
+        }
+        throw err;
+      }
     };
 
     try {
@@ -198,19 +222,23 @@ export class SharedContextManager {
         this.currentProfileDir = baseProfile;
         this.isIsolatedProfile = false;
       }
-    } catch (e: any) {
-      const msg = String(e?.message || e);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       const isSingleton = /ProcessSingleton|SingletonLock|profile is already in use/i.test(msg);
       if (strategy === "single" || !isSingleton) {
         // hard fail
         if (isSingleton && strategy === "single") {
-          log.error("❌ Chrome profile already in use and strategy=single. Close other instance or set NOTEBOOK_PROFILE_STRATEGY=auto/isolated.");
+          log.error(
+            "❌ Chrome profile already in use and strategy=single. Close other instance or set NOTEBOOK_PROFILE_STRATEGY=auto/isolated."
+          );
         }
         throw e;
       }
 
       // auto strategy with lock → fall back to isolated instance dir
-      log.warning("⚠️  Base Chrome profile in use by another process. Falling back to isolated per-instance profile...");
+      log.warning(
+        "⚠️  Base Chrome profile in use by another process. Falling back to isolated per-instance profile..."
+      );
       const isolatedDir = await this.prepareIsolatedProfileDir(baseProfile);
       this.globalContext = await tryLaunch(isolatedDir);
       this.currentProfileDir = isolatedDir;
@@ -226,7 +254,9 @@ export class SharedContextManager {
         this.contextCreatedAt = null;
         this.currentHeadlessMode = null;
       });
-    } catch {}
+    } catch {
+      /* close listener is optional — patchright versions differ */
+    }
 
     // Validate cookies if we loaded state
     if (statePath) {
@@ -296,7 +326,7 @@ export class SharedContextManager {
       if (CONFIG.cloneProfileOnIsolated && fs.existsSync(baseProfile)) {
         log.info("  🧬 Cloning base Chrome profile into isolated instance (may take time)...");
         // Best-effort clone without locks
-        await (fs.promises as any).cp(baseProfile, dir, {
+        await fs.promises.cp(baseProfile, dir, {
           recursive: true,
           errorOnExist: false,
           force: true,
@@ -304,7 +334,7 @@ export class SharedContextManager {
             const bn = path.basename(src);
             return !/^Singleton/i.test(bn) && !bn.endsWith(".lock") && !bn.endsWith(".tmp");
           },
-        } as any);
+        });
         log.success("  ✅ Clone complete");
       } else {
         log.info("  🧪 Using fresh isolated Chrome profile (no clone)");
@@ -317,7 +347,7 @@ export class SharedContextManager {
 
   private async pruneIsolatedProfiles(phase: "startup" | "shutdown"): Promise<void> {
     const root = CONFIG.chromeInstancesDir;
-    let entries: Array<{ path: string; mtimeMs: number }>; 
+    let entries: Array<{ path: string; mtimeMs: number }>;
     try {
       const names = await fs.promises.readdir(root, { withFileTypes: true });
       entries = [];
@@ -327,7 +357,9 @@ export class SharedContextManager {
         try {
           const st = await fs.promises.stat(p);
           entries.push({ path: p, mtimeMs: st.mtimeMs });
-        } catch {}
+        } catch {
+          /* skip entries we can't stat (vanished or permission denied) */
+        }
       }
     } catch {
       return; // directory absent is fine
@@ -351,7 +383,8 @@ export class SharedContextManager {
       const ageMs = now - e.mtimeMs;
       const overTtl = ttlMs > 0 && ageMs > ttlMs;
       const overCount = i >= maxCount;
-      const isCurrent = this.currentProfileDir && path.resolve(e.path) === path.resolve(this.currentProfileDir);
+      const isCurrent =
+        this.currentProfileDir && path.resolve(e.path) === path.resolve(this.currentProfileDir);
       if (!isCurrent && (overTtl || overCount)) {
         toDelete.add(e.path);
       } else {
@@ -376,14 +409,15 @@ export class SharedContextManager {
     if (path.resolve(dir) === path.resolve(CONFIG.chromeProfileDir)) return;
     // Only remove within instances root
     if (!path.resolve(dir).startsWith(path.resolve(CONFIG.chromeInstancesDir))) return;
-    // Best-effort: try removing typical lock files first, then the directory
     try {
-      await fs.promises.rm(dir, { recursive: true, force: true } as any);
-    } catch (err) {
-      // If rm is not available in older node, fallback to rmdir
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    } catch {
+      // Older Node.js: rm may be unavailable; rmdir is the supported fallback.
       try {
-        await (fs.promises as any).rmdir(dir, { recursive: true });
-      } catch {}
+        await fs.promises.rmdir(dir, { recursive: true });
+      } catch {
+        /* swallow — caller already logged the eviction context */
+      }
     }
   }
 
@@ -445,15 +479,15 @@ export class SharedContextManager {
     // Calculate target headless mode
     // If override is specified, use it (!overrideHeadless because true = show browser = headless false)
     // Otherwise, use CONFIG.headless (which may have been temporarily modified by browser_options)
-    const targetHeadless = overrideHeadless !== undefined
-      ? !overrideHeadless
-      : CONFIG.headless;
+    const targetHeadless = overrideHeadless !== undefined ? !overrideHeadless : CONFIG.headless;
 
     // Compare with current mode
     const needsChange = this.currentHeadlessMode !== targetHeadless;
 
     if (needsChange) {
-      log.info(`  Browser mode change detected: ${this.currentHeadlessMode ? 'HEADLESS' : 'VISIBLE'} → ${targetHeadless ? 'HEADLESS' : 'VISIBLE'}`);
+      log.info(
+        `  Browser mode change detected: ${this.currentHeadlessMode ? "HEADLESS" : "VISIBLE"} → ${targetHeadless ? "HEADLESS" : "VISIBLE"}`
+      );
     }
 
     return needsChange;
@@ -463,10 +497,11 @@ export class SharedContextManager {
    * Get context ID for logging
    */
   private getContextId(): string {
-    if (!this.globalContext) {
-      return "none";
-    }
-    // Use object hash as ID
-    return `ctx-${(this.globalContext as any)._guid || "unknown"}`;
+    if (!this.globalContext) return "none";
+    // Patchright/Playwright contexts expose `_guid` internally for debugging;
+    // it is not part of the public typings, so we read it through a narrowed
+    // shape rather than `any`.
+    const guid = (this.globalContext as unknown as { _guid?: string })._guid;
+    return `ctx-${guid ?? "unknown"}`;
   }
 }

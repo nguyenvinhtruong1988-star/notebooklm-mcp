@@ -12,7 +12,9 @@
  * - Upgrade to Google AI Pro/Ultra for higher limits
  */
 export class RateLimitError extends Error {
-  constructor(message: string = "NotebookLM rate limit reached (50 queries/day for free accounts)") {
+  constructor(
+    message: string = "NotebookLM rate limit reached (50 queries/day for free accounts)"
+  ) {
     super(message);
     this.name = "RateLimitError";
 
