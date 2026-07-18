@@ -319,15 +319,17 @@ export class AuthManager {
             );
           }
 
-          // ✅ SIMPLE: Check if we're on NotebookLM (any path!)
-          if (currentUrl.startsWith("https://notebooklm.google.com/")) {
-            await sendProgress?.("Login successful! NotebookLM detected!", 9, 10);
-            log.success("✅ Login successful! NotebookLM URL detected.");
-            log.success(`✅ Current URL: ${currentUrl}`);
-
+          // ✅ Robust Check: Check if we're on NotebookLM and NOT on a login/accounts page
+          if (currentUrl.startsWith("https://notebooklm.google.com/") && !currentUrl.includes("/login") && !currentUrl.includes("accounts.google.com")) {
             // Short wait to ensure page is loaded
             await page.waitForTimeout(2000);
-            return true;
+            const checkUrl = page.url();
+            if (checkUrl.startsWith("https://notebooklm.google.com/") && !checkUrl.includes("/login") && !checkUrl.includes("accounts.google.com")) {
+              await sendProgress?.("Login successful! NotebookLM detected!", 9, 10);
+              log.success("✅ Login successful! NotebookLM URL detected.");
+              log.success(`✅ Current URL: ${checkUrl}`);
+              return true;
+            }
           }
 
           // Still on accounts.google.com - log periodically

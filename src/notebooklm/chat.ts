@@ -213,7 +213,7 @@ export async function snapshotPriorAnswers(page: Page): Promise<string[]> {
   return page
     .locator(Selectors.chat.answerText)
     .allInnerTexts()
-    .then((texts) => texts.map((t) => t.trim()).filter(Boolean))
+    .then((texts) => texts.map((t) => sanitizeAnswer(t)).filter(Boolean))
     .catch(() => []);
 }
 

@@ -48,3 +48,16 @@ venv/
 .playwright-mcp/
 tmp/
 studio-*.png
+
+# Diagnostics & Scripts
+after_login.png
+before.png
+diag_1_loaded.png
+diag_2_typed.png
+diag_3_after_submit*.png
+login_final_state.png
+login_poll.png
+login.js
+debug_ask.js
+/node
+state.json

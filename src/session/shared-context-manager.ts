@@ -160,8 +160,10 @@ export class SharedContextManager {
     const baseLaunchOptions = {
       headless: shouldBeHeadless,
       viewport: CONFIG.viewport,
-      locale: "en-US",
-      timezoneId: "Europe/Berlin",
+      locale: "vi-VN",
+      timezoneId: "Asia/Ho_Chi_Minh",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      bypassCSP: true,
       // ✅ CRITICAL FIX: Pass storageState directly at launch!
       // This is the PROPER way to handle session cookies (Playwright bug workaround)
       // Benefits:

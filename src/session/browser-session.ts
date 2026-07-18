@@ -19,6 +19,7 @@ import type { AuthManager } from "../auth/auth-manager.js";
 import { humanType, randomDelay } from "../utils/stealth-utils.js";
 import { snapshotAllResponses } from "../utils/page-utils.js";
 import { waitForStableAnswer, snapshotPriorAnswers } from "../notebooklm/chat.js";
+import { Selectors } from "../notebooklm/selectors.js";
 import {
   extractCitations as extractCitationsFromPage,
   type SourceFormat,
@@ -64,7 +65,7 @@ export class BrowserSession {
     this.sessionId = sessionId;
     this.sharedContextManager = sharedContextManager;
     this.authManager = authManager;
-    this.notebookUrl = notebookUrl;
+    this.notebookUrl = notebookUrl.replace(/[?&]authuser=\d+/g, "").replace(/&$/, "");
     this.createdAt = Date.now();
     this.lastActivity = Date.now();
     this.messageCount = 0;
@@ -90,6 +91,10 @@ export class BrowserSession {
       // Create new page (tab) in the shared context (with auto-recovery)
       try {
         this.page = await this.context.newPage();
+        await this.page.addInitScript(() => {
+          const newProto = Object.getPrototypeOf(navigator);
+          delete newProto.webdriver;
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (
@@ -98,11 +103,15 @@ export class BrowserSession {
           log.warning("  ♻️  Context was closed. Recreating and retrying newPage...");
           this.context = await this.sharedContextManager.getOrCreateContext();
           this.page = await this.context.newPage();
+          await this.page.addInitScript(() => {
+            const newProto = Object.getPrototypeOf(navigator);
+            delete newProto.webdriver;
+          });
         } else {
           throw e;
         }
       }
-      log.success(`  ✅ Created new page`);
+      log.success(`  ✅ Created new page with stealth active`);
 
       // Navigate to notebook
       log.info(`  🌐 Navigating to: ${this.notebookUrl}`);
@@ -410,10 +419,29 @@ export class BrowserSession {
       // Small pause before submitting
       await randomDelay(500, 1000);
 
-      // Submit the question (Enter key)
+      // Submit the question (Enter key and click submit button fallback)
       log.info(`  📤 Submitting question...`);
       await sendProgress?.("Submitting question...", 3, 5);
-      await page.keyboard.press("Enter");
+
+      let submitted = false;
+      for (const selector of Selectors.chat.submitButton) {
+        try {
+          const btn = page.locator(selector).first();
+          if (await btn.isVisible()) {
+            log.info(`  Clicking submit button: ${selector}`);
+            await btn.click();
+            submitted = true;
+            break;
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (!submitted) {
+        log.info("  Submit button not visible/found, pressing Enter key...");
+        await page.keyboard.press("Enter");
+      }
 
       // Small pause after submit
       await randomDelay(1000, 1500);
